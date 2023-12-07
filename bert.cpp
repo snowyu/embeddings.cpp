@@ -249,6 +249,50 @@ std::string bert_normalize_prompt(const std::string &text)
     }
     return text2;
 }
+
+bool is_Chinese_char(const std::string& str) {
+    int len = str.length();
+    unsigned int codepoint = 0;
+    int num_bytes = 0;
+    int i = 0;
+    unsigned char ch = static_cast<unsigned char>(str[i]);
+    if (ch <= 0x7f) {
+        codepoint = ch;
+        num_bytes = 1;
+    } else if ((ch >> 5) == 0x06) {
+        codepoint = ch & 0x1f;
+        num_bytes = 2;
+    } else if ((ch >> 4) == 0x0e) {
+        codepoint = ch & 0x0f;
+        num_bytes = 3;
+    } else if ((ch >> 3) == 0x1e) {
+        codepoint = ch & 0x07;
+        num_bytes = 4;
+    }
+    for (int j = 1; j < num_bytes; ++j) {
+        if (i + j >= len) {
+            return false;  // 不完整的UTF-8字符
+        }
+        unsigned char next_ch = static_cast<unsigned char>(str[i + j]);
+        if ((next_ch >> 6) != 0x02) {
+            return false;  // 不是有效的UTF-8字符
+        }
+        codepoint = (codepoint << 6) | (next_ch & 0x3f);
+    }
+    if ((codepoint >= 0x4E00 && codepoint <= 0x9FFF) ||
+        (codepoint >= 0x3400 && codepoint <= 0x4DBF) ||
+        (codepoint >= 0x20000 && codepoint <= 0x2A6DF) ||
+        (codepoint >= 0x2A700 && codepoint <= 0x2B73F) ||
+        (codepoint >= 0x2B740 && codepoint <= 0x2B81F) ||
+        (codepoint >= 0x2B920 && codepoint <= 0x2CEAF) ||
+        (codepoint >= 0xF900 && codepoint <= 0xFAFF) ||
+        (codepoint >= 0x2F800 && codepoint <= 0x2FA1F) ||
+        (codepoint >= 0x3000 && codepoint <= 0x303F)) {
+        return true;
+    }
+    return false;
+}
+
 void bert_tokenize(
     struct bert_ctx * ctx,
     const char * text,
@@ -258,31 +302,71 @@ void bert_tokenize(
 {
     int cls_tok_id = 101;
     int sep_tok_id = 102;
+    int unk_tok_id = 100;
     const bert_vocab &vocab = ctx->vocab;
 
-    std::string str = text;
+    std::string ori_str = text;
+    ori_str = bert_normalize_prompt(ori_str);
 
+    // single punct / single symbol / single digit
+    // baseline: add whitespace on the left and right of punct and chinese characters
     std::vector<std::string> words;
-    // first split the text into words
+    std::string new_str = "";
+    int i = 0;
+    while (i < ori_str.size())
     {
-        str = bert_normalize_prompt(str);
-
-        std::string pat = R"([[:punct:]]|[[:alpha:]]+|[[:digit:]]+)";
-
-        std::regex re(pat);
-        std::smatch m;
-
-        while (std::regex_search(str, m, re))
+        int utf_char_len = utf8_len(ori_str[i]);
+        if ((utf_char_len == 1) && ispunct(ori_str[i]))
         {
-            for (std::string x : m)
-            {
-                words.push_back(x);
-            }
-            str = m.suffix();
+            new_str += " ";
+            new_str += ori_str[i];
+            new_str += " ";
+            i += 1;
+        }
+        else if ((utf_char_len == 3) && is_Chinese_char(ori_str.substr(i, 3)))
+        {
+            new_str += " ";
+            new_str += ori_str.substr(i, 3);
+            new_str += " ";
+            i += 3;
+        }
+        else
+        {
+            new_str += ori_str[i];
+            i += 1;
         }
     }
 
+    int l = 0;
+    int r = 0;
+    while (r < new_str.size())    
+    {
+        // if is whitespace
+        if (isspace(new_str[r]))
+        {
+            if (r > l)
+                words.push_back(new_str.substr(l, (r - l)));
+            l = r + 1;
+            r = l;
+        }
+        else
+        {
+            r += 1;
+        }
+    }
+    if (r > l) {words.push_back(new_str.substr(l, (r - l)));}
+
+    // assert (words.size() == words.size());
+    // for (auto i = 0; i < words.size(); i++)
+    // {
+    //     if (words[i] != words[i])
+    //     {
+    //         printf("words[%d] = %s, words[%d] = %s\n", i, words[i].c_str(), i, words[i].c_str());
+    //     }
+    // }
+
     int32_t t = 0;
+    int32_t prev_t = 0;
     tokens[t++] = cls_tok_id;
 
     // find the longest tokens that form the words:
@@ -290,6 +374,7 @@ void bert_tokenize(
     {
         if (word.size() == 0)
             continue;
+        prev_t = t;
 
         int i = 0;
         int n = word.size();
@@ -314,11 +399,17 @@ void bert_tokenize(
             }
             if (j == i)
             {
-                fprintf(stderr, "%s: unknown token '%s'\n", __func__, word.substr(i, 1).data());
+                // fprintf(stderr, "%s: unknown token '%s'\n", __func__, word.substr(i, 1).data());
                 token_map = &vocab.subword_token_to_id;
                 ++i;
             }
         }
+        if (prev_t == t)
+        {
+            fprintf(stderr, "%s: unknown token '%s'\n", __func__, word.data());
+            tokens[t++] = unk_tok_id;
+        }
+
     }
     tokens[t++] = sep_tok_id;
     *n_tokens = t;
