@@ -28,7 +28,7 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
 
     txt_file = "sample_client_texts.txt"
     print(f"Loading texts from {txt_file}...")
-    with open(os.path.join(os.path.dirname(__file__), txt_file), 'r') as f:
+    with open(os.path.join(os.path.dirname(__file__), txt_file), 'r', encoding="utf-8") as f:
         texts = f.readlines()
 
     embedded_texts = [embed_text(text) for text in texts]

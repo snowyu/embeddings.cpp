@@ -25,7 +25,7 @@ typedef int socklen_t;
 
 std::string receive_string(SOCKET_HANDLE socket) {
     static char buffer[1 << 15] = {0};
-    ssize_t bytes_received = read(socket, buffer, sizeof(buffer));
+    ssize_t bytes_received = recv(socket, buffer, sizeof(buffer), 0);
     return std::string(buffer, bytes_received);
 }
 
