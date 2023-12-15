@@ -771,7 +771,8 @@ struct bert_ctx * bert_load_from_file(const char *fname)
         bert_vocab_id tokens[] = {0, 1, 2, 3};
         // TODO: We set the initial buffer size to 32MB and hope it's enough. Maybe there is a better way to do this?
         new_bert->buf_compute.resize(32 * 1024 * 1024);
-        bert_eval(new_bert, 1, tokens, 4, nullptr);
+        bert_forward(new_bert, 1, tokens, 4, nullptr);
+        // new_bert->mem_per_token = 100 * (1 << 10);
         new_bert->max_batch_n = 0;
 
         // TODO: Max tokens should be a param?
@@ -808,17 +809,17 @@ void bert_free(bert_ctx * ctx) {
     delete ctx;
 }
 
-void bert_eval(
+void bert_forward(
     struct bert_ctx *ctx,
     int32_t n_threads,
     bert_vocab_id *tokens,
     int32_t n_tokens,
     float *embeddings)
 {
-    bert_eval_batch(ctx, n_threads, 1, &tokens, &n_tokens, embeddings ? &embeddings : nullptr);
+    bert_forward_fake_batch(ctx, n_threads, 1, &tokens, &n_tokens, embeddings ? &embeddings : nullptr);
 }
 
-void bert_eval_batch(
+void bert_forward_batch(
     bert_ctx * ctx,
     int32_t n_threads,
     int32_t n_batch_size,
@@ -826,6 +827,331 @@ void bert_eval_batch(
     int32_t * n_tokens,
     float ** batch_embeddings)
 {
+    printf("using function bert_forward_batch\n");
+    const bert_model& model = ctx->model;
+    bool mem_req_mode = !batch_embeddings;
+    // batch_embeddings is nullptr for the initial memory requirements run
+    if (!mem_req_mode && n_batch_size > ctx->max_batch_n) {
+        bert_resize_ctx(ctx, n_batch_size);
+        if (n_batch_size > ctx->max_batch_n) {
+            fprintf(stderr, "%s: tried to increase buffers to batch size %d but failed\n", __func__, n_batch_size);
+            return;
+        }
+    }
+
+    int cur_max_n_tokens = 0;
+    for (int ba = 0; ba < n_batch_size; ba++)
+    {
+        if (n_tokens[ba] > cur_max_n_tokens)
+            cur_max_n_tokens = n_tokens[ba];
+    }
+    int cur_max_len = cur_max_n_tokens;
+
+    // const auto &tokens = batch_tokens[ba];
+
+    const auto &hparams = model.hparams;
+
+    const int n_embd = hparams.n_embd;
+    const int n_layer = hparams.n_layer;
+    const int n_max_tokens = hparams.n_max_tokens;
+    const int n_head = hparams.n_head;
+
+    const int d_head = n_embd / n_head;
+
+    std::vector<float> result;
+    if (cur_max_n_tokens > n_max_tokens)
+    {
+        fprintf(stderr, "Too many tokens, maximum is %d\n", n_max_tokens);
+        return;
+    }
+
+    auto & mem_per_token = ctx->mem_per_token;
+    auto & buf_compute   = ctx->buf_compute;
+
+    struct ggml_init_params params = {
+        .mem_size = buf_compute.size,
+        .mem_buffer = buf_compute.data,
+        .no_alloc = false,
+    };
+
+    struct ggml_context *ctx0 = ggml_init(params);
+    struct ggml_cgraph gf = {};
+
+    // Embeddings. word_embeddings + token_type_embeddings + position_embeddings
+    // std::vector<std::vector<bert_vocab_id>> new_batch_tokens({
+    //     {101, 102, 103},
+    //     {102, 103, },
+    // });
+    // float new_embeddings[2][384];
+    // n_batch_size = new_batch_tokens.size();
+    // int cur_max_len = new_batch_tokens[0].size();
+    // N = cur_max_len;
+    struct ggml_tensor *token_layer = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, cur_max_len * n_batch_size);
+    struct ggml_tensor *pad_mask = ggml_new_tensor_4d(ctx0, GGML_TYPE_F32, 1, cur_max_len, 1, n_batch_size);
+    struct ggml_tensor *positions = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, cur_max_len * n_batch_size);
+    struct ggml_tensor *sum = ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, cur_max_len, 1, n_batch_size); // the avg pooler
+    
+    int32_t *token_layer_data = (int32_t *)token_layer->data;
+    float *pad_mask_data = (float *)pad_mask->data;
+    int32_t *pos_data = (int32_t *)positions->data;
+    float *sum_data = (float *)sum->data;
+    for (int ba = 0; ba < n_batch_size; ba++)
+    {
+        for (int i = 0; i < cur_max_len; i++)
+        {
+            int cur_len = n_tokens[ba];
+            if (i < cur_len)
+            {
+                token_layer_data[ba * cur_max_len + i] = batch_tokens[ba][i];
+                pad_mask_data[ba * cur_max_len + i] = 1.0f;
+                sum_data[ba * cur_max_len + i] = 1 / (float)cur_len;
+            }
+            else
+            {
+                token_layer_data[ba * cur_max_len + i] = 101; // padding
+                pad_mask_data[ba * cur_max_len + i] = 0.0f;
+                sum_data[ba * cur_max_len + i] = 0.0f;
+            }
+            pos_data[ba * cur_max_len + i] = i;
+        }
+    }
+
+
+
+    // for (int ba = 0; ba < n_batch_size; ba++)
+    // {
+    //     printf("sample %d in the batch sum_data: \n", ba);
+    //     for (int i = 0; i < cur_max_len; i++)
+    //     {
+    //         printf(" %1.3f ", sum_data[ba * cur_max_len + i]);
+    //     }
+    //     printf("\n");
+    // }
+
+    // for (int ba = 0; ba < n_batch_size; ba++)
+    // {
+    //     printf("sample %d in the batch token_data: ", ba);
+    //     for (int i = 0; i < cur_max_len; i++)
+    //     {
+    //         printf(" %1.3d ", token_layer_data[ba * cur_max_len + i]);
+    //     }
+    //     printf("\n");
+    // }
+
+    // // print pad mask data
+    // for (int ba = 0; ba < n_batch_size; ba++)
+    // {
+    //     printf("sample %d in the batch pad_mask_data: ", ba);
+    //     for (int i = 0; i < cur_max_len; i++)
+    //     {
+    //         printf(" %1.3f ", pad_mask_data[ba * cur_max_len + i]);
+    //     }
+    //     printf("\n");
+    // }
+
+    struct ggml_tensor * attn_mask = ggml_mul_mat(ctx0, pad_mask, pad_mask);
+    attn_mask = ggml_add1(ctx0, attn_mask, ggml_new_f32(ctx0, -1.0f)); // result -0
+    attn_mask = ggml_scale(ctx0, attn_mask, ggml_new_f32(ctx0, 100000.0f)); // BUG: 1e3 will cause overflow?
+    attn_mask = ggml_repeat(ctx0, attn_mask, ggml_new_tensor_4d(ctx0, GGML_TYPE_I32, cur_max_len, cur_max_len, n_head, n_batch_size));
+    attn_mask = ggml_reshape_3d(ctx0, attn_mask, cur_max_len, cur_max_len, n_head * n_batch_size);
+
+    struct ggml_tensor *token_types = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, cur_max_len * n_batch_size);
+    ggml_set_zero(token_types);
+
+    struct ggml_tensor *inpL = ggml_get_rows(ctx0, model.word_embeddings, token_layer);
+
+    inpL = ggml_add(ctx0,
+                    ggml_get_rows(ctx0, model.token_type_embeddings, token_types),
+                    inpL);
+    inpL = ggml_add(ctx0,
+                    ggml_get_rows(ctx0, model.position_embeddings, positions),
+                    inpL);
+    inpL = ggml_reshape_3d(ctx0, inpL, n_embd, cur_max_len, n_batch_size);
+
+    // embd norm
+    {
+        inpL = ggml_norm(ctx0, inpL);
+        inpL = ggml_add(ctx0,
+                        ggml_mul(ctx0,
+                                    ggml_repeat(ctx0, model.ln_e_w, inpL),
+                                    inpL),
+                        ggml_repeat(ctx0, model.ln_e_b, inpL));
+    }
+
+    // layers
+    for (int il = 0; il < n_layer; il++)
+    {
+        struct ggml_tensor *cur = inpL;
+
+        // self-attention
+        {
+            struct ggml_tensor *Qcur = cur;
+            Qcur = ggml_add(ctx0, ggml_repeat(ctx0, model.layers[il].q_b, Qcur),
+                                            ggml_mul_mat(ctx0, model.layers[il].q_w, Qcur)),
+            Qcur = ggml_reshape_4d(ctx0, Qcur,
+                                    d_head, n_head, cur_max_len, n_batch_size);
+            struct ggml_tensor *Q = ggml_cont(ctx0, ggml_permute(ctx0, Qcur, 0, 2, 1, 3)); // -> [d_head, N, n_head, bs]
+            Q = ggml_reshape_3d(ctx0, Q, d_head, cur_max_len, n_head * n_batch_size);
+
+            struct ggml_tensor *Kcur = cur;
+            Kcur = ggml_add(ctx0, ggml_repeat(ctx0, model.layers[il].k_b, Kcur),
+                                            ggml_mul_mat(ctx0, model.layers[il].k_w, Kcur)),
+            Kcur = ggml_reshape_4d(ctx0, Kcur,
+                                    d_head, n_head, cur_max_len, n_batch_size);
+            struct ggml_tensor *K = ggml_cont(ctx0, ggml_permute(ctx0, Kcur, 0, 2, 1, 3)); // -> [d_head, N, n_head, bs]
+            K = ggml_reshape_3d(ctx0, K, d_head, cur_max_len, n_head * n_batch_size);
+            
+
+            struct ggml_tensor *Vcur = cur;
+            Vcur = ggml_add(ctx0, ggml_repeat(ctx0, model.layers[il].v_b, Vcur),
+                                            ggml_mul_mat(ctx0, model.layers[il].v_w, Vcur)),
+            Vcur = ggml_reshape_4d(ctx0, Vcur,
+                                    d_head, n_head, cur_max_len, n_batch_size);
+            struct ggml_tensor *V = ggml_cont(ctx0, ggml_permute(ctx0, Vcur, 0, 2, 1, 3)); // -> [d_head, N, n_head, bs]
+            V = ggml_reshape_3d(ctx0, V, d_head, cur_max_len, n_head * n_batch_size);
+
+            struct ggml_tensor *KQ = ggml_mul_mat(ctx0, K, Q); // -> [N, N, n_head * bs]
+            // KQ = soft_max(KQ / sqrt(head width))
+            KQ = ggml_scale(ctx0,
+                            KQ,
+                            ggml_new_f32(ctx0, 1.0f / sqrt((float)d_head)));
+            
+            KQ = ggml_add(ctx0, KQ, attn_mask);
+            KQ = ggml_soft_max(ctx0, KQ);
+
+            V = ggml_cont(ctx0, ggml_transpose(ctx0, V)); // -> [N, d_head, n_head* bs]
+            // V = ggml_repeat(ctx0, ggml_new_f32(ctx0, 1.999f), V);
+            // KQ = ggml_repeat(ctx0, ggml_new_f32(ctx0, 1.999f), KQ);
+            struct ggml_tensor *KQV = ggml_mul_mat(ctx0, V, KQ); // -> [d_head, N, n_head* bs]
+            KQV = ggml_reshape_4d(ctx0, KQV, d_head, cur_max_len, n_head, n_batch_size);
+            KQV = ggml_cont(ctx0, ggml_permute(ctx0, KQV, 0, 2, 1, 3)); // -> [d_head, n_head, N, n_batch_size]
+
+            cur = ggml_cpy(ctx0,
+                            KQV,
+                            ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, n_embd, cur_max_len, n_batch_size));
+        }
+
+        // attention output
+        cur = ggml_add(ctx0,
+                        ggml_repeat(ctx0, model.layers[il].o_b, cur),
+                        ggml_mul_mat(ctx0, model.layers[il].o_w, cur));
+
+        // re-add the layer input
+        cur = ggml_add(ctx0, cur, inpL);
+
+        // attention norm
+        {
+            cur = ggml_norm(ctx0, cur);
+
+            cur = ggml_add(ctx0,
+                            ggml_mul(ctx0,
+                                    ggml_repeat(ctx0, model.layers[il].ln_att_w, cur),
+                                    cur),
+                            ggml_repeat(ctx0, model.layers[il].ln_att_b, cur));
+        }
+        struct ggml_tensor *att_output = cur;
+        // intermediate_output = self.intermediate(attention_output)
+        cur = ggml_mul_mat(ctx0, model.layers[il].ff_i_w, cur);
+        cur = ggml_add(ctx0,
+                        ggml_repeat(ctx0, model.layers[il].ff_i_b, cur),
+                        cur);
+        cur = ggml_gelu(ctx0, cur);
+
+        // layer_output = self.output(intermediate_output, attention_output)
+        cur = ggml_mul_mat(ctx0, model.layers[il].ff_o_w, cur);
+        cur = ggml_add(ctx0,
+                        ggml_repeat(ctx0, model.layers[il].ff_o_b, cur),
+                        cur);
+        // attentions bypass the intermediate layer
+        cur = ggml_add(ctx0, att_output, cur);
+
+        // output norm
+        {
+            cur = ggml_norm(ctx0, cur);
+
+            cur = ggml_add(ctx0,
+                            ggml_mul(ctx0,
+                                    ggml_repeat(ctx0, model.layers[il].ln_out_w, cur),
+                                    cur),
+                            ggml_repeat(ctx0, model.layers[il].ln_out_b, cur));
+        }
+        inpL = cur;
+    }
+
+
+    inpL = ggml_cont(ctx0, ggml_transpose(ctx0, inpL));
+    // pooler
+    inpL = ggml_mul_mat(ctx0, inpL, sum); // [d_embd, N, bs] * [N, 1, bs] -> [d_embd, 1, bs]
+
+    // normalizer
+    ggml_tensor *length = ggml_sqrt(ctx0,
+                                    ggml_sum_rows(ctx0, ggml_sqr(ctx0, inpL)));  // [1, 1, bs]
+    inpL = ggml_div(ctx0, inpL, ggml_repeat(ctx0, length, inpL));
+    inpL = ggml_reshape_2d(ctx0, inpL, n_embd, n_batch_size);
+
+    ggml_tensor *output = inpL;
+
+    // run the computation
+    ggml_build_forward_expand(&gf, output);
+    ggml_graph_compute_with_ctx(ctx0, &gf, n_threads);
+
+
+    // float *data = ggml_get_data_f32(output);
+    // printf("\n\n");
+    // for (int ba = 0; ba < n_batch_size; ba++){
+    //     for (int i = 0; i < 4; i++){
+    //         printf("sample[%d] token [%d]: ", ba, i);
+    //         for (int j = 0; j < 10; j++){
+    //             printf(" %1.3f ", data[ba * n_embd * cur_max_len + i * n_embd + j]);
+    //         }
+    //         printf("\n");
+    //     }
+    // }
+
+    // float *data = ggml_get_data_f32(output); // attn_mask_data [N, N, n_head * bs]
+    // printf("\n\n");
+    // for (int ba = 0; ba < n_batch_size; ba++){
+    //     printf("sample[%d]: \n", ba);
+    //     for (int token_id = 0; token_id < cur_max_len; token_id++){
+    //         for (int token_id2 = 0; token_id2 < cur_max_len; token_id2++){
+    //             printf(" %1.1f ", data[ba * cur_max_len * cur_max_len * n_head + 0 + token_id * cur_max_len + token_id2]);
+    //         }
+    //         printf("\n");
+    //     }
+    // }
+
+    #ifdef GGML_PERF
+        // print timing information per ggml operation (for debugging purposes)
+        // requires GGML_PERF to be defined
+        ggml_graph_print(&gf);
+    #endif
+
+    if (!mem_req_mode) {
+        float * output_data = (float *)output->data;
+        for (int ba = 0; ba < n_batch_size; ba++){
+            memcpy(batch_embeddings[ba], output_data + ba * n_embd, sizeof(float) * n_embd);
+        }
+    } else {
+        mem_per_token = ggml_used_mem(ctx0) / ( cur_max_len * n_batch_size);
+
+        // printf("used_mem = %zu KB \n", ggml_used_mem(ctx0) / 1024);
+        // printf("mem_per_token = %zu KB \n", mem_per_token / 1024);
+    }
+
+    ggml_free(ctx0);
+}
+
+
+// the `eval` is actually forward
+void bert_forward_fake_batch(
+    bert_ctx * ctx,
+    int32_t n_threads,
+    int32_t n_batch_size,
+    bert_vocab_id ** batch_tokens,
+    int32_t * n_tokens,
+    float ** batch_embeddings)
+{
+    printf("using function bert_forward_fake_batch\n");
     const bert_model& model = ctx->model;
     bool mem_req_mode = !batch_embeddings;
     // batch_embeddings is nullptr for the initial memory requirements run
@@ -1049,7 +1375,7 @@ void bert_encode_batch(
     float **embeddings)
 {
     // TODO: Disable batching for now
-    n_batch_size = 1;
+    // n_batch_size = 1;
     /*
     if (n_batch_size > n_inputs) {
         n_batch_size = n_inputs;
@@ -1075,7 +1401,7 @@ void bert_encode_batch(
     }
 
     if (n_batch_size == n_inputs) {
-        bert_eval_batch(ctx, n_threads, n_batch_size, unsorted_tokens.data(), n_tokens.data(), embeddings);
+        bert_forward_batch(ctx, n_threads, n_batch_size, unsorted_tokens.data(), n_tokens.data(), embeddings);        
     } else {
         // sort the inputs by tokenized length, batch and eval
 
@@ -1107,7 +1433,7 @@ void bert_encode_batch(
             if (i + n_batch_size > n_inputs) {
                 n_batch_size = n_inputs - i;
             }
-            bert_eval_batch(ctx, n_threads, n_batch_size, &sorted_tokens[i], &sorted_n_tokens[i], &sorted_embeddings[i]);
+            bert_forward_batch(ctx, n_threads, n_batch_size, &sorted_tokens[i], &sorted_n_tokens[i], &sorted_embeddings[i]);
         }
     }
 }

@@ -60,7 +60,7 @@ BERT_API void bert_tokenize(
     int32_t * n_tokens,
     int32_t n_max_tokens);
 
-BERT_API void bert_eval(
+BERT_API void bert_forward(
     struct bert_ctx * ctx,
     int32_t n_threads,
     bert_vocab_id * tokens,
@@ -68,7 +68,15 @@ BERT_API void bert_eval(
     float * embeddings);
 
 // NOTE: for batch processing the longest input must be first
-BERT_API void bert_eval_batch(
+BERT_API void bert_forward_batch(
+    struct bert_ctx * ctx,
+    int32_t n_threads,
+    int32_t n_batch_size,
+    bert_vocab_id ** batch_tokens,
+    int32_t * n_tokens,
+    float ** batch_embeddings);
+
+BERT_API void bert_forward_fake_batch(
     struct bert_ctx * ctx,
     int32_t n_threads,
     int32_t n_batch_size,
