@@ -15,9 +15,10 @@ if len(sys.argv) > 1:
 HF_PREFIX = ''
 if 'all-MiniLM' in MODEL_NAME:
     HF_PREFIX = 'sentence-transformers/'
-N_THREADS = 6
+N_THREADS = 32
 
-modes = ['q4_0', 'q4_1', 'f32', 'f16', 'sbert', 'sbert-batchless']
+# modes = ['q4_0', 'q4_1', 'f32', 'f16', 'sbert', 'sbert-batchless']
+modes = ['q4_0', 'sbert', 'sbert-batchless']
 
 TASKS = [
     "STSBenchmark",
@@ -87,7 +88,7 @@ for mode in modes:
     elif mode == 'sbert-batchless':
         model = BatchlessModel(SentenceTransformer(f"{HF_PREFIX}{MODEL_NAME}"))
     else:
-        model = BertModel(f'../models/{MODEL_NAME}/ggml-model-{mode}.bin')
+        model = BertModel(f'../models/{MODEL_NAME}/ggml-model-{mode}.bin') # this work
 
     evaluation = MTEB(tasks=TASKS)
     output_folder = f"results/{MODEL_NAME}_{mode}"

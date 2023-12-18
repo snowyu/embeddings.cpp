@@ -6,6 +6,10 @@ Note that the sbert results here are with CPU. Sbert also supports GPU inference
 
 Use `print_tables.py` to format the results like the following tables.
 
+### update
+
+Support batch inference, improve from 15.56ms to 4.81ms in STSBenchmark for `all-MiniLM-L6-v2`.
+
 ### all-MiniLM-L6-v2
 | Data Type | STSBenchmark | eval time | EmotionClassification | eval time | 
 |-----------|-----------|------------|-----------|------------|

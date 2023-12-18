@@ -772,7 +772,6 @@ struct bert_ctx * bert_load_from_file(const char *fname)
         // TODO: We set the initial buffer size to 32MB and hope it's enough. Maybe there is a better way to do this?
         new_bert->buf_compute.resize(32 * 1024 * 1024);
         bert_forward(new_bert, 1, tokens, 4, nullptr);
-        // new_bert->mem_per_token = 100 * (1 << 10);
         new_bert->max_batch_n = 0;
 
         // TODO: Max tokens should be a param?
@@ -785,23 +784,28 @@ struct bert_ctx * bert_load_from_file(const char *fname)
     return new_bert;
 }
 
-void bert_resize_ctx(bert_ctx * ctx, int32_t new_size) {    
-    int64_t buf_size_new = ctx->mem_per_input * new_size;
+void bert_resize_ctx(bert_ctx * ctx, int32_t new_batch_size, int32_t max_len) {
+    max_len = 512; // bug have to be 512
+    int64_t new_mem_per_input = 1.15 * (ctx->mem_per_token * max_len);
+    int64_t new_buf_size = new_mem_per_input * new_batch_size;
 
-    // TODO: Max memory should be a param? Now just 1 GB
-    int64_t GB = 1 << 30;
-    //printf("%s: requested_buf_size %lldMB\n", __func__, buf_size_new / (1 << 20));
-    if (buf_size_new > GB) {
-        int32_t adjusted_new_size = GB / ctx->mem_per_input;
-        if (adjusted_new_size < 1) adjusted_new_size = 1;
-        //printf("%s: requested batch size %d, actual new batch size %d\n", __func__, new_size, adjusted_new_size);
-        new_size = adjusted_new_size;
-        buf_size_new = ctx->mem_per_input * new_size;
+    // TODO: Max memory should be a param? Now just 8 GB
+    int64_t GB = (1 << 30);
+    GB *= 32;
+    //printf("%s: requested_buf_size %lldMB\n", __func__, new_buf_size / (1 << 20));
+    if (new_buf_size > GB) {
+        int32_t adjusted_new_batch_size = GB / new_mem_per_input;
+        if (adjusted_new_batch_size < 1) adjusted_new_batch_size = 1;
+        printf("%s: requested batch size %d, actual new batch size %d\n", __func__, new_batch_size, adjusted_new_batch_size);
+        new_batch_size = adjusted_new_batch_size;
+        new_buf_size = new_mem_per_input * new_batch_size;
     }
-    if (new_size > ctx->max_batch_n) {
-        ctx->buf_compute.resize(buf_size_new);
-        ctx->max_batch_n = new_size;
+    if (new_buf_size > (ctx->mem_per_input * ctx->max_batch_n)) {
+        printf("%s: new_buf_size %lldMB, old_buf_size %lldMB\n", __func__, new_buf_size / (1 << 20), (ctx->mem_per_input * ctx->max_batch_n) / (1 << 20));
+        ctx->buf_compute.resize(new_buf_size);
+        ctx->max_batch_n = new_batch_size;
     }
+    ctx->mem_per_input = new_mem_per_input;
 }
 
 void bert_free(bert_ctx * ctx) {
@@ -816,7 +820,7 @@ void bert_forward(
     int32_t n_tokens,
     float *embeddings)
 {
-    bert_forward_fake_batch(ctx, n_threads, 1, &tokens, &n_tokens, embeddings ? &embeddings : nullptr);
+    bert_forward_batch(ctx, n_threads, 1, &tokens, &n_tokens, embeddings ? &embeddings : nullptr);
 }
 
 void bert_forward_batch(
@@ -827,17 +831,7 @@ void bert_forward_batch(
     int32_t * n_tokens,
     float ** batch_embeddings)
 {
-    printf("using function bert_forward_batch\n");
     const bert_model& model = ctx->model;
-    bool mem_req_mode = !batch_embeddings;
-    // batch_embeddings is nullptr for the initial memory requirements run
-    if (!mem_req_mode && n_batch_size > ctx->max_batch_n) {
-        bert_resize_ctx(ctx, n_batch_size);
-        if (n_batch_size > ctx->max_batch_n) {
-            fprintf(stderr, "%s: tried to increase buffers to batch size %d but failed\n", __func__, n_batch_size);
-            return;
-        }
-    }
 
     int cur_max_n_tokens = 0;
     for (int ba = 0; ba < n_batch_size; ba++)
@@ -846,6 +840,16 @@ void bert_forward_batch(
             cur_max_n_tokens = n_tokens[ba];
     }
     int cur_max_len = cur_max_n_tokens;
+
+    bool mem_req_mode = !batch_embeddings;
+    // batch_embeddings is nullptr for the initial memory requirements run
+    if (!mem_req_mode && n_batch_size > ctx->max_batch_n) {
+        bert_resize_ctx(ctx, n_batch_size, cur_max_n_tokens);
+        if (n_batch_size > ctx->max_batch_n) {
+            fprintf(stderr, "%s: tried to increase buffers to batch size %d but failed, please increase the limitation of max memory\n", __func__, n_batch_size);
+            return;
+        }
+    }
 
     // const auto &tokens = batch_tokens[ba];
 
@@ -1156,7 +1160,7 @@ void bert_forward_fake_batch(
     bool mem_req_mode = !batch_embeddings;
     // batch_embeddings is nullptr for the initial memory requirements run
     if (!mem_req_mode && n_batch_size > ctx->max_batch_n) {
-        bert_resize_ctx(ctx, n_batch_size);
+        bert_resize_ctx(ctx, n_batch_size, model.hparams.n_max_tokens);
         if (n_batch_size > ctx->max_batch_n) {
             fprintf(stderr, "%s: tried to increase buffers to batch size %d but failed\n", __func__, n_batch_size);
             return;
