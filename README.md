@@ -1,7 +1,16 @@
-# bert.cpp
+# embeddings.cpp
 
-[ggml](https://github.com/ggerganov/ggml) inference of BERT neural net architecture with pooling and normalization from [SentenceTransformers (sbert.net)](https://sbert.net/).
+[ggml](https://github.com/ggerganov/ggml) inference of BERT neural net architecture with pooling and normalization from embedding models including [SentenceTransformers (sbert.net)](https://sbert.net/), [BGE series](https://huggingface.co/BAAI/bge-base-en-v1.5) and others.
 High quality sentence embeddings in pure C++ (with C API).
+
+This repo is a fork of original [bert.cpp](https://github.com/skeskinen/bert.cpp).
+
+In this fork, we have added support for:
+
++ Multilingual tokenizer inlcuding Asian languages and latin languages.
++ Support real batch inference.
++ Support current SOTA embedding model [BGE series](https://huggingface.co/BAAI/bge-base-en-v1.5).
+
 
 ## Description
 The main goal of `bert.cpp` is to run the BERT model using 4-bit integer quantization on CPU
@@ -9,16 +18,14 @@ The main goal of `bert.cpp` is to run the BERT model using 4-bit integer quantiz
 * Plain C/C++ implementation without dependencies
 * Inherit support for various architectures from ggml (x86 with AVX2, ARM, etc.)
 * Choose your model size from 32/16/4 bits per model weigth
-* all-MiniLM-L6-v2 with 4bit quantization is only 14MB. Inference RAM usage depends on the length of the input
+* all-MiniLM-L6-v2/BGE with 4bit quantization is only 14MB. Inference RAM usage depends on the length of the input
 * Sample cpp server over tcp socket and a python test client
 * Benchmarks to validate correctness and speed of inference
 
 ## Limitations & TODO
-* Tokenizer doesn't correctly handle asian writing (CJK, maybe others)
-* bert.cpp doesn't respect tokenizer, pooling or normalization settings from the model card:
-    * All inputs are lowercased and trimmed
-    * All outputs are mean pooled and normalized
-* Batching support is WIP. Lack of real batching means that this library is slower than it could be in usecases where you have multiple sentences
+
++ Update to the latest ggml lib and gguf format.
++ Current memory management is not good enough, should be improved using lastest ggml api.
 
 ## Usage
 
@@ -26,12 +33,15 @@ The main goal of `bert.cpp` is to run the BERT model using 4-bit integer quantiz
 ```sh
 git submodule update --init --recursive
 ```
-### Download models
+
+### Get models
 ```sh
-pip3 install -r requirements.txt
-# python3 models/download-ggml.py list_models
-python3 models/download-ggml.py download all-MiniLM-L6-v2 q4_0
+pip install -r requirements.txt
+cd models
+python download-repo.py BAAI/bge-base-en-v1.5 # or any other model
+sh run_conversions.sh bge-base-en-v1.5
 ```
+
 ### Build
 To build the dynamic library for usage from e.g. Python:
 ```sh
@@ -134,43 +144,26 @@ There is also models/run_conversions.sh which creates all 4 versions (f32, f16, 
 ```sh
 cd models
 # Clone a model from hf
-git clone https://huggingface.co/sentence-transformers/multi-qa-MiniLM-L6-cos-v1
+python download-repo.py USERNAME/MODEL_NAME
 # Run conversions to 4 ggml formats (f32, f16, Q4_0, Q4_1)
-sh run_conversions.sh multi-qa-MiniLM-L6-cos-v1
+sh run_conversions.sh MODEL_NAME
 ```
 
 ## Benchmarks
 Running MTEB (Massive Text Embedding Benchmark) with bert.cpp vs. [sbert](https://sbert.net/)(cpu mode) gives comparable results between the two, with quantization having minimal effect on accuracy and eval time being similar or better than sbert with batch_size=1 (bert.cpp doesn't support batching).
 
 See [benchmarks](benchmarks) more info.
-### all-MiniLM-L6-v2
-| Data Type | STSBenchmark | eval time | EmotionClassification | eval time | 
-|-----------|-----------|------------|-----------|------------|
-| f32 | 0.8201 | 6.83 | 0.4082 | 11.34 | 
-| f16 | 0.8201 | 6.17 | 0.4085 | 10.28 | 
-| q4_0 | 0.8175 | 5.45 | 0.3911 | 10.63 | 
-| q4_1 | 0.8223 | 6.79 | 0.4027 | 11.41 | 
-| sbert | 0.8203 | 2.74 | 0.4085 | 5.56 | 
-| sbert-batchless | 0.8203 | 13.10 | 0.4085 | 15.52 | 
 
-### all-MiniLM-L12-v2
-| Data Type | STSBenchmark | eval time | EmotionClassification | eval time | 
-|-----------|-----------|------------|-----------|------------|
-| f32 | 0.8306 | 13.36 | 0.4117 | 21.23 | 
-| f16 | 0.8306 | 11.51 | 0.4119 | 20.08 | 
-| q4_0 | 0.8310 | 11.27 | 0.4183 | 20.81 | 
-| q4_1 | 0.8325 | 12.37 | 0.4093 | 19.38 | 
-| sbert | 0.8309 | 5.11 | 0.4117 | 8.93 | 
-| sbert-batchless | 0.8309 | 22.81 | 0.4117 | 28.04 | 
+### BGE_base_en_v1.5
 
-### bert-base-uncased
-bert-base-uncased is not a very good sentence embeddings model, but it's here to show that bert.cpp correctly runs models that are not from SentenceTransformers. Technically any hf model with architecture `BertModel` or `BertForMaskedLM` should work.
+| Data Type | STSBenchmark | eval time | 
+|-----------|-----------|------------|
+| f32 | 0.8530 | 20.04 | 
+| f16 | 0.8530 | 21.82 | 
+| q4_0 | 0.8509 | 18.78 | 
+| q4_0-batchless | 0.8509 | 35.97 |
+| q4_1 | 0.8568 | 18.77 |
+| sbert | 0.8464 | 7.52 | 
+| sbert-batchless | 0.8464 | 64.58 | 
 
-| Data Type | STSBenchmark | eval time | EmotionClassification | eval time | 
-|-----------|-----------|------------|-----------|------------|
-| f32 | 0.4738 | 52.38 | 0.3361 | 88.56 | 
-| f16 | 0.4739 | 33.24 | 0.3361 | 55.86 | 
-| q4_0 | 0.4940 | 33.93 | 0.3375 | 57.82 | 
-| q4_1 | 0.4612 | 36.86 | 0.3318 | 59.63 | 
-| sbert | 0.4729 | 16.97 | 0.3527 | 28.77 | 
-| sbert-batchless | 0.4729 | 69.97 | 0.3526 | 79.02 | 
+Note that the absolute value is not comparable to the original repo, as the test machine is different.

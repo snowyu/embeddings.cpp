@@ -44,16 +44,12 @@ void tokenizer_test(bert_ctx * ctx, const std::string& input, const std::vector<
 int main(int argc, char ** argv) {
 
     bert_params params;
-    params.model = "/home/xiaoyizhang/bert.cpp/models/all-MiniLM-L6-v2/ggml-model-q4_0.bin";
+    params.model = "models/bge-small-en-v1.5/ggml-model-q4_0.bin";
 
     if (bert_params_parse(argc, argv, params) == false) {
         return 1;
     }
 
-
-    // std::string x = "H你好，世界！";
-    // printf("%s -> ", x.substr(0, 4).c_str());
-    // return 0;
 
     bert_ctx * bctx;
 
@@ -64,11 +60,7 @@ int main(int argc, char ** argv) {
             return 1;
         }
     }
-    /*
-    for (auto &kv : vocab.id_to_token) {
-        printf("%d -> %s\n", kv.first, kv.second.c_str());
-    }
-    */
+
 
     // tokenizer tests:
 

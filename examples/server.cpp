@@ -35,7 +35,7 @@ void send_floats(SOCKET_HANDLE socket, const std::vector<float> floats) {
 
 int main(int argc, char ** argv) {
     bert_params params;
-    params.model = "../../models/all-MiniLM-L6-v2/ggml-model-q4_0.bin";
+    params.model = "models/all-MiniLM-L6-v2/ggml-model-q4_0.bin";
 
     if (bert_params_parse(argc, argv, params) == false) {
         return 1;

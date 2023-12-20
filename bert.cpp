@@ -789,19 +789,19 @@ void bert_resize_ctx(bert_ctx * ctx, int32_t new_batch_size, int32_t max_len) {
     int64_t new_mem_per_input = 1.15 * (ctx->mem_per_token * max_len);
     int64_t new_buf_size = new_mem_per_input * new_batch_size;
 
-    // TODO: Max memory should be a param? Now just 8 GB
+    // TODO: Max memory should be a param? Now just 12 GB
     int64_t GB = (1 << 30);
-    GB *= 32;
+    GB *= 12;
     //printf("%s: requested_buf_size %lldMB\n", __func__, new_buf_size / (1 << 20));
     if (new_buf_size > GB) {
         int32_t adjusted_new_batch_size = GB / new_mem_per_input;
         if (adjusted_new_batch_size < 1) adjusted_new_batch_size = 1;
-        printf("%s: requested batch size %d, actual new batch size %d\n", __func__, new_batch_size, adjusted_new_batch_size);
+        // printf("%s: requested batch size %d, actual new batch size %d\n", __func__, new_batch_size, adjusted_new_batch_size);
         new_batch_size = adjusted_new_batch_size;
         new_buf_size = new_mem_per_input * new_batch_size;
     }
     if (new_buf_size > (ctx->mem_per_input * ctx->max_batch_n)) {
-        printf("%s: new_buf_size %lldMB, old_buf_size %lldMB\n", __func__, new_buf_size / (1 << 20), (ctx->mem_per_input * ctx->max_batch_n) / (1 << 20));
+        // printf("%s: new_buf_size %lldMB, old_buf_size %lldMB\n", __func__, new_buf_size / (1 << 20), (ctx->mem_per_input * ctx->max_batch_n) / (1 << 20));
         ctx->buf_compute.resize(new_buf_size);
         ctx->max_batch_n = new_batch_size;
     }

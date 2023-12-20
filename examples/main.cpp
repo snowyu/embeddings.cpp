@@ -10,8 +10,7 @@ int main(int argc, char ** argv) {
     const int64_t t_main_start_us = ggml_time_us();
 
     bert_params params;
-    // params.model = "../../models/all-MiniLM-L6-v2/ggml-model-f32.bin";
-    params.model = "/home/xiaoyizhang/bert.cpp/models/all-MiniLM-L6-v2/ggml-model-q4_0.bin";
+    params.model = "models/bge-small-en-v1.5/ggml-model-q4_0.bin";
 
     if (bert_params_parse(argc, argv, params) == false) {
         return 1;
