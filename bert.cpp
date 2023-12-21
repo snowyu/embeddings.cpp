@@ -271,11 +271,11 @@ bool is_Chinese_char(const std::string& str) {
     }
     for (int j = 1; j < num_bytes; ++j) {
         if (i + j >= len) {
-            return false;  // 不完整的UTF-8字符
+            return false;  // incomplete UTF-8 character
         }
         unsigned char next_ch = static_cast<unsigned char>(str[i + j]);
         if ((next_ch >> 6) != 0x02) {
-            return false;  // 不是有效的UTF-8字符
+            return false;  // invalid trailing byte
         }
         codepoint = (codepoint << 6) | (next_ch & 0x3f);
     }
@@ -284,10 +284,11 @@ bool is_Chinese_char(const std::string& str) {
         (codepoint >= 0x20000 && codepoint <= 0x2A6DF) ||
         (codepoint >= 0x2A700 && codepoint <= 0x2B73F) ||
         (codepoint >= 0x2B740 && codepoint <= 0x2B81F) ||
-        (codepoint >= 0x2B920 && codepoint <= 0x2CEAF) ||
+        (codepoint >= 0x2B920 && codepoint <= 0x2CEAF) || // this should be 0x2B820 but in hf rust code it is 0x2B920
         (codepoint >= 0xF900 && codepoint <= 0xFAFF) ||
         (codepoint >= 0x2F800 && codepoint <= 0x2FA1F) ||
-        (codepoint >= 0x3000 && codepoint <= 0x303F)) {
+        (codepoint >= 0x3000 && codepoint <= 0x303F) ||
+        (codepoint >= 0xFF00 && codepoint <= 0xFFEF)) {
         return true;
     }
     return false;
@@ -406,7 +407,7 @@ void bert_tokenize(
         }
         if (prev_t == t)
         {
-            fprintf(stderr, "%s: unknown token '%s'\n", __func__, word.data());
+            // fprintf(stderr, "%s: unknown token '%s'\n", __func__, word.data());
             tokens[t++] = unk_tok_id;
         }
 

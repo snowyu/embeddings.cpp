@@ -42,6 +42,16 @@ python download-repo.py BAAI/bge-base-en-v1.5 # or any other model
 sh run_conversions.sh bge-base-en-v1.5
 ```
 
+### Test tokenizer
+
+In this fork we support multilingual tokenizer, you can test different model's tokenzier by:
+
+```sh
+bash test_tokenizer.sh bge-base-en-v1.5
+```
+
+This script will tokenize the content in `models/test_prompts.txt` with both huggingface tokenizer and this tokenizer, and compare the results. You can add more content in the `models/test_prompts.txt` to test more cases. Note that orignal `bge-small-zh-v1.5` tokenizer (not this repo) is some problematic, refer to this [issue](https://github.com/xyzhang626/embeddings.cpp/issues/1) for more details.
+
 ### Build
 To build the dynamic library for usage from e.g. Python:
 ```sh
