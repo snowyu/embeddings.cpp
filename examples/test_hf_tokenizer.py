@@ -4,7 +4,9 @@ import argparse
 
 def main(args):
     # tokenizer_name = "sentence-transformers/multi-qa-MiniLM-L6-cos-v1"
-    if "MiniLM" in args.model_name:
+    if "/" in args.model_name:
+        tokenizer_name = args.model_name
+    elif "MiniLM" in args.model_name:
         tokenizer_name = f"sentence-transformers/{args.model_name}"
     elif "bge-" in args.model_name:
         tokenizer_name = f"BAAI/{args.model_name}"
@@ -29,6 +31,6 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Download original repo files')
-    parser.add_argument('model_name', help='Name of the repo')
-    args = parser.parse_args() 
+    parser.add_argument('model_name', type=str, help='Name of the repo')
+    args = parser.parse_args()
     main(args)
