@@ -5,11 +5,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#if defined(_WIN32)
-#define BERT_API __declspec(dllexport)
-#else
 #define BERT_API __attribute__ ((visibility ("default")))
-#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -69,14 +65,6 @@ BERT_API void bert_forward(
 
 // NOTE: for batch processing the longest input must be first
 BERT_API void bert_forward_batch(
-    struct bert_ctx * ctx,
-    int32_t n_threads,
-    int32_t n_batch_size,
-    bert_vocab_id ** batch_tokens,
-    int32_t * n_tokens,
-    float ** batch_embeddings);
-
-BERT_API void bert_forward_fake_batch(
     struct bert_ctx * ctx,
     int32_t n_threads,
     int32_t n_batch_size,

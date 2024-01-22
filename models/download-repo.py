@@ -14,4 +14,3 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Download original repo files')
     parser.add_argument('repo_id', help='Name of the repo')
     download_model(parser.parse_args())
-
