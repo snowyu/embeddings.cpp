@@ -1,5 +1,6 @@
 #include "bert.h"
 #include "ggml.h"
+#include "ggml/ggml-backend.h"
 
 #include <cassert>
 #include <cmath>
@@ -14,6 +15,66 @@
 #include <thread>
 #include <algorithm>
 
+#define BERT_MAX_NODES 4096
+
+// model keys
+
+#define KEY_FTYPE "general.file_type"
+#define KEY_NAME "general.name"
+#define KEY_DESCRIPTION "general.description"
+#define KEY_TOKEN_LIST "tokenizer.ggml.tokens"
+
+const int verbosity = 3;
+
+//
+// utilities to get data from a gguf file
+//
+
+static int get_key_idx(const gguf_context * ctx, const char * key) {
+    int i = gguf_find_key(ctx, key);
+    if (i == -1) {
+        fprintf(stderr, "key %s not found in file\n", key);
+        throw printf("Missing required key: %s", key);
+    }
+
+    return i;
+}
+
+static uint32_t get_u32(const gguf_context * ctx, const std::string & key) {
+    const int i = get_key_idx(ctx, key.c_str());
+
+    return gguf_get_val_u32(ctx, i);
+}
+
+static float get_f32(const gguf_context * ctx, const std::string & key) {
+    const int i = get_key_idx(ctx, key.c_str());
+
+    return gguf_get_val_f32(ctx, i);
+}
+
+static std::string get_str(const gguf_context * ctx, const std::string & key) {
+    const int i = get_key_idx(ctx, key.c_str());
+
+    return gguf_get_val_str(ctx, i);
+}
+
+static struct ggml_tensor * get_tensor(struct ggml_context * ctx, const std::string & name) {
+    struct ggml_tensor * cur = ggml_get_tensor(ctx, name.c_str());
+    if (!cur) {
+        throw printf("%s: unable to find tensor %s\n", __func__, name.c_str());
+    }
+
+    return cur;
+}
+
+static std::string get_ftype(int ftype) {
+    return ggml_type_name(static_cast<ggml_type>(ftype));
+}
+
+//
+// data structures
+//
+
 // default hparams (all-MiniLM-L6-v2)
 struct bert_hparams {
     int32_t n_vocab = 30522;
@@ -22,7 +83,7 @@ struct bert_hparams {
     int32_t n_intermediate = 1536;
     int32_t n_head = 12;
     int32_t n_layer = 6;
-    int32_t f16 = 1;
+    float_t layer_norm_eps = 1e-12;
 };
 
 struct bert_layer {
@@ -71,25 +132,6 @@ struct bert_model {
     struct ggml_tensor *ln_e_b;
 
     std::vector<bert_layer> layers;
-
-    struct ggml_context *ctx;
-    std::map<std::string, struct ggml_tensor *> tensors;
-};
-
-// replacement for std::vector<uint8_t> that doesn't require zero-initialization.
-struct bert_buffer {
-    uint8_t * data = NULL;
-    size_t size = 0;
-
-    void resize(size_t size) {
-        delete[] data;
-        data = new uint8_t[size];
-        this->size = size;
-    }
-
-    ~bert_buffer() {
-        delete[] data;
-    }
 };
 
 struct bert_ctx {
@@ -99,7 +141,17 @@ struct bert_ctx {
     size_t mem_per_token;
     int64_t mem_per_input;
     int32_t max_batch_n;
-    bert_buffer buf_compute;
+
+    struct gguf_context * ctx_gguf;
+    struct ggml_context * ctx_data;
+
+    std::vector<uint8_t> buf_compute_meta;
+
+    // memory buffers to evaluate the model
+    ggml_backend_buffer_t params_buffer = NULL;
+    ggml_backend_buffer_t compute_buffer = NULL;
+    ggml_backend_t backend = NULL;
+    ggml_allocr * compute_alloc = NULL;
 };
 
 int32_t bert_n_embd(bert_ctx * ctx) {
@@ -149,29 +201,16 @@ bool bert_params_parse(int argc, char **argv, bert_params &params) {
     {
         std::string arg = argv[i];
 
-        if (arg == "-t" || arg == "--threads")
-        {
+        if (arg == "-t" || arg == "--threads") {
             params.n_threads = std::stoi(argv[++i]);
-        }
-        else if (arg == "-p" || arg == "--prompt")
-        {
+        } else if (arg == "-p" || arg == "--prompt") {
             params.prompt = argv[++i];
-        }
-        else if (arg == "--port")
-        {
-            params.port = std::stoi(argv[++i]);
-        }
-        else if (arg == "-m" || arg == "--model")
-        {
+        } else if (arg == "-m" || arg == "--model") {
             params.model = argv[++i];
-        }
-        else if (arg == "-h" || arg == "--help")
-        {
+        } else if (arg == "-h" || arg == "--help") {
             bert_print_usage(argv, params);
             exit(0);
-        }
-        else
-        {
+        } else {
             fprintf(stderr, "error: unknown argument: %s\n", arg.c_str());
             bert_print_usage(argv, params);
             exit(0);
@@ -182,7 +221,7 @@ bool bert_params_parse(int argc, char **argv, bert_params &params) {
 }
 
 //
-// Tokenizing
+// tokenizing
 //
 
 static size_t utf8_len(char src) {
@@ -397,64 +436,89 @@ void bert_tokenize(
 }
 
 //
-// Loading and setup
+// loading and setup
 //
 
 struct bert_ctx * bert_load_from_file(const char *fname) {
     printf("%s: loading model from '%s' - please wait ...\n", __func__, fname);
 
-    auto fin = std::ifstream(fname, std::ios::binary);
-    if (!fin) {
-        fprintf(stderr, "%s: failed to open '%s'\n", __func__, fname);
-        return nullptr;
+    struct ggml_context * meta = NULL;
+
+    struct gguf_init_params params = {
+        /*.no_alloc = */ true,
+        /*.ctx      = */ &meta,
+    };
+
+    struct gguf_context * ctx = gguf_init_from_file(fname, params);
+    if (!ctx) {
+        throw printf("%s: failed to load BERT model from %s. Does this file exist?\n", __func__, fname);
     }
 
-    // verify magic
-    {
-        uint32_t magic;
-        fin.read((char *)&magic, sizeof(magic));
-        if (magic != 0x67676d6c) {
-            fprintf(stderr, "%s: invalid model file '%s' (bad magic)\n", __func__, fname);
-            return nullptr;
+    if (verbosity >= 1) {
+        const int n_tensors = gguf_get_n_tensors(ctx);
+        const int n_kv = gguf_get_n_kv(ctx);
+        const int ftype = get_u32(ctx, KEY_FTYPE);
+        const int alignment = gguf_get_alignment(ctx);
+        const int version = gguf_get_version(ctx);
+        const std::string ftype_str = get_ftype(ftype);
+        const std::string description = get_str(ctx, KEY_DESCRIPTION);
+        const std::string name = get_str(ctx, KEY_NAME);
+        printf("%s: model name:   %s\n", __func__, name.c_str());
+        printf("%s: description:  %s\n", __func__, description.c_str());
+        printf("%s: GGUF version: %d\n", __func__, version);
+        printf("%s: alignment:    %zu\n", __func__, alignment);
+        printf("%s: n_tensors:    %d\n", __func__, n_tensors);
+        printf("%s: n_kv:         %d\n", __func__, n_kv);
+        printf("%s: ftype:        %s\n", __func__, ftype_str.c_str());
+        printf("\n");
+    }
+    const int n_tensors = gguf_get_n_tensors(ctx);
+
+    // kv
+    if (verbosity >= 3) {
+        const int n_kv = gguf_get_n_kv(ctx);
+
+        for (int i = 0; i < n_kv; ++i) {
+            const char * key = gguf_get_key(ctx, i);
+
+            printf("%s: kv[%d]: key = %s\n", __func__, i, key);
         }
+        printf("\n");
     }
 
+    // create model object
     bert_ctx * new_bert = new bert_ctx;
     bert_model & model = new_bert->model;
     bert_vocab & vocab = new_bert->vocab;
+    bert_hparams & hparams = model.hparams;
 
-    // load hparams
+    // load hparams (FIXME)
     {
-        auto &hparams = model.hparams;
+        hparams.n_vocab = get_u32(ctx, "vocab_size");
+        hparams.n_max_tokens = get_u32(ctx, "max_position_embedding");
+        hparams.n_embd = get_u32(ctx, "hidden_size");
+        hparams.n_intermediate = get_u32(ctx, "intermediate_size");
+        hparams.n_head = get_u32(ctx, "num_attention_heads");
+        hparams.n_layer = get_u32(ctx, "num_hidden_layers");
+        hparams.layer_norm_eps = get_f32(ctx, "layer_norm_eps");
 
-        fin.read((char *)&hparams.n_vocab, sizeof(hparams.n_vocab));
-        fin.read((char *)&hparams.n_max_tokens, sizeof(hparams.n_max_tokens));
-        fin.read((char *)&hparams.n_embd, sizeof(hparams.n_embd));
-        fin.read((char *)&hparams.n_intermediate, sizeof(hparams.n_intermediate));
-        fin.read((char *)&hparams.n_head, sizeof(hparams.n_head));
-        fin.read((char *)&hparams.n_layer, sizeof(hparams.n_layer));
-        fin.read((char *)&hparams.f16, sizeof(hparams.f16));
-
-        printf("%s: n_vocab = %d\n", __func__, hparams.n_vocab);
+        printf("%s: n_vocab        = %d\n", __func__, hparams.n_vocab);
         printf("%s: n_max_tokens   = %d\n", __func__, hparams.n_max_tokens);
-        printf("%s: n_embd  = %d\n", __func__, hparams.n_embd);
-        printf("%s: n_intermediate  = %d\n", __func__, hparams.n_intermediate);
-        printf("%s: n_head  = %d\n", __func__, hparams.n_head);
-        printf("%s: n_layer = %d\n", __func__, hparams.n_layer);
-        printf("%s: f16     = %d\n", __func__, hparams.f16);
+        printf("%s: n_embd         = %d\n", __func__, hparams.n_embd);
+        printf("%s: n_intermediate = %d\n", __func__, hparams.n_intermediate);
+        printf("%s: n_head         = %d\n", __func__, hparams.n_head);
+        printf("%s: n_layer        = %d\n", __func__, hparams.n_layer);
+        printf("%s: layer_norm_eps = %g\n", __func__, hparams.layer_norm_eps);
+        printf("\n");
     }
 
     // load vocab
     {
-        int32_t n_vocab = model.hparams.n_vocab;
+        const int token_idx = gguf_find_key(ctx, KEY_TOKEN_LIST);
+        const int n_vocab = gguf_get_arr_n(ctx, token_idx);
 
-        std::string word;
         for (int i = 0; i < n_vocab; i++) {
-            uint32_t len;
-            fin.read((char *)&len, sizeof(len));
-
-            word.resize(len);
-            fin.read((char *)word.data(), len);
+            std::string word = gguf_get_arr_str(ctx, token_idx, i);
 
             if (word[0] == '#' && word[1] == '#') {
                 vocab.subword_token_to_id[word.substr(2)] = i;
@@ -468,377 +532,210 @@ struct bert_ctx * bert_load_from_file(const char *fname) {
         }
     }
 
-    // for the big tensors, we have the option to store the data in 16-bit floats or quantized
-    // in order to save memory and also to speed up the computation
-    ggml_type wtype = GGML_TYPE_COUNT;
-    switch (model.hparams.f16) {
-    case 0:
-        wtype = GGML_TYPE_F32;
-        break;
-    case 1:
-        wtype = GGML_TYPE_F16;
-        break;
-    case 2:
-        wtype = GGML_TYPE_Q4_0;
-        break;
-    case 3:
-        wtype = GGML_TYPE_Q4_1;
-        break;
-    default:
+    // data
+    size_t buffer_size = 0;
     {
-        fprintf(stderr, "%s: invalid model file '%s' (bad f16 value %d)\n",
-                __func__, fname, model.hparams.f16);
-        bert_free(new_bert);
-        return nullptr;
-    }
+        for (int i = 0; i < n_tensors; ++i) {
+            const char * name = gguf_get_tensor_name(ctx, i);
+            const size_t offset = gguf_get_tensor_offset(ctx, i);
+            struct ggml_tensor * cur = ggml_get_tensor(meta, name);
+            size_t tensor_size = ggml_nbytes(cur);
+            buffer_size += tensor_size;
+            if (verbosity >= 3) {
+                printf("%s: tensor[%d]: n_dims = %d, name = %s, tensor_size=%zu, offset=%zu\n", __func__, i,
+                       ggml_n_dims(cur), cur->name, tensor_size, offset);
+            }
+        }
     }
 
-    auto &ctx = model.ctx;
+    // initialize backend
+#ifdef GGML_USE_CUBLAS
+    new_bert->backend = ggml_backend_cuda_init(0);
+    printf("%s: BERT using CUDA backend\n", __func__);
+#endif
 
-    size_t model_mem_req = 0;
+#ifdef GGML_USE_METAL
+    new_bert->backend = ggml_backend_metal_init();
+    printf("%s: BERT using Metal backend\n", __func__);
+#endif
 
-    {
-        const auto &hparams = model.hparams;
-
-        const int n_embd = hparams.n_embd;
-        const int n_layer = hparams.n_layer;
-        const int n_max_tokens = hparams.n_max_tokens;
-        const int n_intermediate = hparams.n_intermediate;
-        const int n_vocab = hparams.n_vocab;
-
-        // Calculate size requirements
-
-        model_mem_req += n_embd * n_vocab * ggml_type_sizef(wtype); // word_embeddings
-        model_mem_req += n_embd * 2 * ggml_type_sizef(wtype); // token_type_embeddings
-        model_mem_req += n_embd * n_max_tokens * ggml_type_sizef(wtype); // position_embeddings
-
-        model_mem_req += 2 * n_embd * ggml_type_sizef(GGML_TYPE_F32); // ln_e_*
-
-        model_mem_req += 4 * n_layer * (n_embd * ggml_type_sizef(GGML_TYPE_F32)); // ln_*
-
-        model_mem_req += 4 * n_layer * (n_embd * n_embd * ggml_type_sizef(wtype)); // kqvo weights
-        model_mem_req += 4 * n_layer * (n_embd * ggml_type_sizef(GGML_TYPE_F32)); // kqvo bias
-
-        model_mem_req += 2 * n_layer * (n_embd * n_intermediate * ggml_type_sizef(wtype)); // ff_*_w
-        model_mem_req += n_layer * (n_intermediate * ggml_type_sizef(GGML_TYPE_F32)); // ff_i_b
-        model_mem_req += n_layer * (n_embd * ggml_type_sizef(GGML_TYPE_F32)); // ff_o_b
-
-        model_mem_req += (5 + 16 * n_layer) * 512; // object overhead
-
-        printf("%s: ggml ctx size = %6.2f MB\n", __func__, model_mem_req / (1024.0 * 1024.0));
+    if (!new_bert->backend) {
+        new_bert->backend = ggml_backend_cpu_init();
+        printf("%s: BERT using CPU backend\n", __func__);
     }
 
-    // create the ggml context
+    // load tensors
     {
+        std::vector<uint8_t> read_buf;
         struct ggml_init_params params = {
-            .mem_size = model_mem_req,
-            .mem_buffer = NULL,
-            .no_alloc = false,
+            /*.mem_size =*/ (n_tensors + 1) * ggml_tensor_overhead(),
+            /*.mem_buffer =*/ NULL,
+            /*.no_alloc =*/ true,
         };
 
-        model.ctx = ggml_init(params);
-        if (!model.ctx) {
+        new_bert->ctx_data = ggml_init(params);
+        if (!new_bert->ctx_data) {
             fprintf(stderr, "%s: ggml_init() failed\n", __func__);
-            bert_free(new_bert);
+            free(new_bert);
             return nullptr;
         }
+
+        auto fin = std::ifstream(fname, std::ios::binary);
+        if (!fin) {
+            printf("cannot open model file for loading tensors\n");
+            free(new_bert);
+            return nullptr;
+        }
+
+        // add tensors to context
+        for (int i = 0; i < n_tensors; ++i) {
+            const char * name = gguf_get_tensor_name(ctx, i);
+            struct ggml_tensor * t = ggml_get_tensor(meta, name);
+            struct ggml_tensor * cur = ggml_dup_tensor(new_bert->ctx_data, t);
+            ggml_set_name(cur, name);
+        }
+
+        // alloc memory and offload data
+        new_bert->params_buffer = ggml_backend_alloc_buffer(new_bert->backend, buffer_size);
+        ggml_allocr* alloc = ggml_allocr_new_from_buffer(new_bert->params_buffer);
+        for (int i = 0; i < n_tensors; ++i) {
+            const char * name = gguf_get_tensor_name(ctx, i);
+            struct ggml_tensor * cur = ggml_get_tensor(new_bert->ctx_data, name);
+            ggml_allocr_alloc(alloc, cur);
+            const size_t offset = gguf_get_data_offset(ctx) + gguf_get_tensor_offset(ctx, i);
+            fin.seekg(offset, std::ios::beg);
+            if (!fin) {
+                printf("%s: failed to seek for tensor %s\n", __func__, name);
+                bert_free(new_bert);
+                return nullptr;
+            }
+            int num_bytes = ggml_nbytes(cur);
+            if (ggml_backend_buffer_is_host(new_bert->params_buffer)) {
+                // for the CPU and Metal backend, we can read directly into the tensor
+                fin.read(reinterpret_cast<char *>(cur->data), num_bytes);
+            } else {
+                // read into a temporary buffer first, then copy to device memory
+                read_buf.resize(num_bytes);
+                fin.read(reinterpret_cast<char *>(read_buf.data()), num_bytes);
+                ggml_backend_tensor_set(cur, read_buf.data(), 0, num_bytes);
+            }
+        }
+        ggml_allocr_free(alloc);
     }
 
-    // prepare memory for the weights
+    // use get_tensors to populate bert_model
     {
-        const auto &hparams = model.hparams;
+        // embeddings weights
+        model.word_embeddings = get_tensor(new_bert->ctx_data, "bert.embeddings.word_embeddings.weight");
+        model.token_type_embeddings = get_tensor(new_bert->ctx_data, "bert.embeddings.token_type_embeddings.weight");
+        model.position_embeddings = get_tensor(new_bert->ctx_data, "bert.embeddings.position_embeddings.weight");
+        model.ln_e_w = get_tensor(new_bert->ctx_data, "bert.embeddings.LayerNorm.weight");
+        model.ln_e_b = get_tensor(new_bert->ctx_data, "bert.embeddings.LayerNorm.bias");
 
-        const int n_embd = hparams.n_embd;
-        const int n_layer = hparams.n_layer;
-        const int n_intermediate = hparams.n_intermediate;
-        const int n_max_tokens = hparams.n_max_tokens;
-        const int n_vocab = hparams.n_vocab;
+        // layers
+        for (int i = 0; i < hparams.n_layer; ++i) {
+            bert_layer & layer = model.layers[i];
+            std::string pre = "bert.encoder.layer." + std::to_string(i);
 
-        model.layers.resize(n_layer);
+            // normalization
+            layer.ln_att_w = get_tensor(new_bert->ctx_data, pre + "attention.output.LayerNorm.weight");
+            layer.ln_att_b = get_tensor(new_bert->ctx_data, pre + "attention.output.LayerNorm.bias");
 
-        model.word_embeddings = ggml_new_tensor_2d(ctx, wtype, n_embd, n_vocab);
-        model.token_type_embeddings = ggml_new_tensor_2d(ctx, wtype, n_embd, 2);
-        model.position_embeddings = ggml_new_tensor_2d(ctx, wtype, n_embd, n_max_tokens);
+            layer.ln_out_w = get_tensor(new_bert->ctx_data, pre + ".output.LayerNorm.weight");
+            layer.ln_out_b = get_tensor(new_bert->ctx_data, pre + ".output.LayerNorm.bias");
 
-        model.ln_e_w = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_embd);
-        model.ln_e_b = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_embd);
+            // attention
+            layer.q_w = get_tensor(new_bert->ctx_data, pre + ".attention.self.query.weight");
+            layer.q_b = get_tensor(new_bert->ctx_data, pre + ".attention.self.query.bias");
+            layer.k_w = get_tensor(new_bert->ctx_data, pre + ".attention.self.key.weight");
+            layer.k_b = get_tensor(new_bert->ctx_data, pre + ".attention.self.key.bias");
+            layer.v_w = get_tensor(new_bert->ctx_data, pre + ".attention.self.value.weight");
+            layer.v_b = get_tensor(new_bert->ctx_data, pre + ".attention.self.value.bias");
 
-        // map by name
-        model.tensors["embeddings.word_embeddings.weight"] = model.word_embeddings;
-        model.tensors["embeddings.token_type_embeddings.weight"] = model.token_type_embeddings;
-        model.tensors["embeddings.position_embeddings.weight"] = model.position_embeddings;
+            layer.o_w = get_tensor(new_bert->ctx_data, pre + ".attention.output.dense.weight");
+            layer.o_b = get_tensor(new_bert->ctx_data, pre + ".attention.output.dense.bias");
 
-        model.tensors["embeddings.LayerNorm.weight"] = model.ln_e_w;
-        model.tensors["embeddings.LayerNorm.bias"] = model.ln_e_b;
+            // ff
+            layer.ff_i_w = get_tensor(new_bert->ctx_data, pre + ".intermediate.dense.weight");
+            layer.ff_i_b = get_tensor(new_bert->ctx_data, pre + ".intermediate.dense.bias");
 
-        for (int i = 0; i < n_layer; ++i) {
-            auto &layer = model.layers[i];
-
-            layer.ln_att_w = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_embd);
-            layer.ln_att_b = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_embd);
-            layer.ln_out_w = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_embd);
-            layer.ln_out_b = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_embd);
-
-            layer.q_w = ggml_new_tensor_2d(ctx, wtype, n_embd, n_embd);
-            layer.q_b = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_embd);
-            layer.k_w = ggml_new_tensor_2d(ctx, wtype, n_embd, n_embd);
-            layer.k_b = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_embd);
-            layer.v_w = ggml_new_tensor_2d(ctx, wtype, n_embd, n_embd);
-            layer.v_b = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_embd);
-            layer.o_w = ggml_new_tensor_2d(ctx, wtype, n_embd, n_embd);
-            layer.o_b = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_embd);
-
-            layer.ff_i_w = ggml_new_tensor_2d(ctx, wtype, n_embd, n_intermediate);
-            layer.ff_i_b = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_intermediate);
-
-            layer.ff_o_w = ggml_new_tensor_2d(ctx, wtype, n_intermediate, n_embd);
-            layer.ff_o_b = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_embd);
-
-            // map by name
-
-            model.tensors["encoder.layer." + std::to_string(i) + ".attention.self.query.weight"] = layer.q_w;
-            model.tensors["encoder.layer." + std::to_string(i) + ".attention.self.query.bias"] = layer.q_b;
-            model.tensors["encoder.layer." + std::to_string(i) + ".attention.self.key.weight"] = layer.k_w;
-            model.tensors["encoder.layer." + std::to_string(i) + ".attention.self.key.bias"] = layer.k_b;
-            model.tensors["encoder.layer." + std::to_string(i) + ".attention.self.value.weight"] = layer.v_w;
-            model.tensors["encoder.layer." + std::to_string(i) + ".attention.self.value.bias"] = layer.v_b;
-            model.tensors["encoder.layer." + std::to_string(i) + ".attention.output.LayerNorm.weight"] = layer.ln_att_w;
-            model.tensors["encoder.layer." + std::to_string(i) + ".attention.output.LayerNorm.bias"] = layer.ln_att_b;
-            model.tensors["encoder.layer." + std::to_string(i) + ".attention.output.dense.weight"] = layer.o_w;
-            model.tensors["encoder.layer." + std::to_string(i) + ".attention.output.dense.bias"] = layer.o_b;
-
-            model.tensors["encoder.layer." + std::to_string(i) + ".intermediate.dense.weight"] = layer.ff_i_w;
-            model.tensors["encoder.layer." + std::to_string(i) + ".intermediate.dense.bias"] = layer.ff_i_b;
-
-            model.tensors["encoder.layer." + std::to_string(i) + ".output.LayerNorm.weight"] = layer.ln_out_w;
-            model.tensors["encoder.layer." + std::to_string(i) + ".output.LayerNorm.bias"] = layer.ln_out_b;
-            model.tensors["encoder.layer." + std::to_string(i) + ".output.dense.weight"] = layer.ff_o_w;
-            model.tensors["encoder.layer." + std::to_string(i) + ".output.dense.bias"] = layer.ff_o_b;
+            layer.ff_o_w = get_tensor(new_bert->ctx_data, pre + ".output.dense.weight");
+            layer.ff_o_b = get_tensor(new_bert->ctx_data, pre + ".output.dense.bias");
         }
     }
 
-    // load weights
+    // free metadata
+    ggml_free(meta);
+    new_bert->ctx_gguf = ctx;
+
+    // measure mem requirement and allocate
     {
-        int n_tensors = 0;
-        size_t total_size = 0;
+        // allocate space for graph
+        new_bert->buf_compute_meta.resize(GGML_DEFAULT_GRAPH_SIZE * ggml_tensor_overhead() + ggml_graph_overhead());
+        new_bert->compute_alloc = ggml_allocr_new_measure_from_backend(new_bert->backend);
 
-        printf("%s: ", __func__);
+        // construct batch and compute graph
+        bert_vocab_id batch[] = {0, 1, 2, 3};
+        ggml_cgraph * gf = bert_build_graph(new_bert, 1, &batch, {4});
 
-        while (true) {
-            int32_t n_dims;
-            int32_t length;
-            int32_t ftype;
+        size_t compute_memory_buffer_size = ggml_allocr_alloc_graph(new_bert->compute_alloc, gf);
+        ggml_allocr_free(new_bert->compute_alloc);
+        new_bert->compute_buffer = ggml_backend_alloc_buffer(new_bert->backend, compute_memory_buffer_size);
+        new_bert->compute_alloc = ggml_allocr_new_from_buffer(new_bert->compute_buffer);
 
-            fin.read(reinterpret_cast<char *>(&n_dims), sizeof(n_dims));
-            fin.read(reinterpret_cast<char *>(&length), sizeof(length));
-            fin.read(reinterpret_cast<char *>(&ftype), sizeof(ftype));
-
-            if (fin.eof()) {
-                break;
-            }
-
-            int64_t nelements = 1;
-            int64_t ne[2] = {1, 1};
-            for (int i = 0; i < n_dims; ++i) {
-                int32_t ne_cur;
-                fin.read(reinterpret_cast<char *>(&ne_cur), sizeof(ne_cur));
-                ne[i] = ne_cur;
-                nelements *= ne[i];
-            }
-
-            std::string name(length, 0);
-            fin.read(&name[0], length);
-
-            if (model.tensors.find(name.data()) == model.tensors.end()) {
-                fprintf(stderr, "%s: unknown tensor '%s' in model file\n", __func__, name.data());
-                bert_free(new_bert);
-                return nullptr;
-            }
-
-            auto tensor = model.tensors[name.data()];
-            if (ggml_nelements(tensor) != nelements) {
-                fprintf(stderr, "%s: tensor '%s' has wrong size in model file\n", __func__, name.data());
-                bert_free(new_bert);
-                return nullptr;
-            }
-
-            if (tensor->ne[0] != ne[0] || tensor->ne[1] != ne[1]) {
-                fprintf(stderr, "%s: tensor '%s' has wrong shape in model file: got [%lld, %lld], expected [%lld, %lld]\n",
-                        __func__, name.data(), tensor->ne[0], tensor->ne[1], ne[0], ne[1]);
-                bert_free(new_bert);
-                return nullptr;
-            }
-
-            /*
-            static const char *ftype_str[] = {
-                "f32",
-                "f16",
-                "q4_0",
-                "q4_1",
-            };
-            printf("%24s - [%5lld, %5lld], type = %6s, %6.2f MB, %9zu bytes\n", name.data(), ne[0], ne[1], ftype_str[ftype], ggml_nbytes(tensor) / 1024.0 / 1024.0, ggml_nbytes(tensor));
-            */
-
-            size_t bpe = 0;
-
-            switch (ftype) {
-            case 0:
-                bpe = ggml_type_size(GGML_TYPE_F32);
-                break;
-            case 1:
-                bpe = ggml_type_size(GGML_TYPE_F16);
-                break;
-            case 2:
-                bpe = ggml_type_size(GGML_TYPE_Q4_0);
-                assert(ne[0] % 64 == 0);
-                break;
-            case 3:
-                bpe = ggml_type_size(GGML_TYPE_Q4_1);
-                assert(ne[0] % 64 == 0);
-                break;
-            default:
-            {
-                fprintf(stderr, "%s: unknown ftype %d in model file\n", __func__, ftype);
-                bert_free(new_bert);
-                return nullptr;
-            }
-            }
-
-            if ((nelements * bpe) / ggml_blck_size(tensor->type) != ggml_nbytes(tensor)) {
-                fprintf(stderr, "%s: tensor '%s' has wrong size in model file: got %zu, expected %llu\n",
-                        __func__, name.data(), ggml_nbytes(tensor), nelements * bpe);
-                bert_free(new_bert);
-                return nullptr;
-            }
-
-            fin.read(reinterpret_cast<char *>(tensor->data), ggml_nbytes(tensor));
-
-            // printf("%42s - [%5d, %5d], type = %6s, %6.2f MB\n", name.data(), ne[0], ne[1], ftype == 0 ? "float" : "f16", ggml_nbytes(tensor)/1024.0/1024.0);
-            total_size += ggml_nbytes(tensor);
-            if (++n_tensors % 8 == 0) {
-                printf(".");
-                fflush(stdout);
-            }
-        }
-
-        printf(" done\n");
-
-        printf("%s: model size = %8.2f MB / num tensors = %d\n", __func__, total_size / 1024.0 / 1024.0, n_tensors);
+        printf("%s: compute allocated memory: %.2f MB\n", __func__, compute_memory_buffer_size / 1024.0/ 1024.0);
     }
-
-    fin.close();
-
-    // Calculate space requirements for setting up context buffers later
-    {
-        bert_vocab_id tokens[] = {0, 1, 2, 3};
-        // TODO: We set the initial buffer size to 32MB and hope it's enough. Maybe there is a better way to do this?
-        new_bert->buf_compute.resize(32 * 1024 * 1024);
-        bert_forward(new_bert, 1, tokens, 4, nullptr);
-        new_bert->max_batch_n = 0;
-
-        // TODO: Max tokens should be a param?
-        int32_t N = new_bert->model.hparams.n_max_tokens;
-        new_bert->mem_per_input = 1.1 * (new_bert->mem_per_token * N); // add 10% to account for ggml object overhead
-
-    }
-    printf("%s: mem_per_token %zu KB, mem_per_input %lld MB\n", __func__, new_bert->mem_per_token / (1 << 10), new_bert->mem_per_input / (1 << 20));
 
     return new_bert;
 }
 
-void bert_resize_ctx(bert_ctx * ctx, int32_t new_batch_size, int32_t max_len) {
-    max_len = 512; // bug have to be 512
-    int64_t new_mem_per_input = 1.15 * (ctx->mem_per_token * max_len);
-    int64_t new_buf_size = new_mem_per_input * new_batch_size;
-
-    // TODO: Max memory should be a param? Now just 12 GB
-    int64_t GB = (1 << 30);
-    GB *= 12;
-    //printf("%s: requested_buf_size %lldMB\n", __func__, new_buf_size / (1 << 20));
-    if (new_buf_size > GB) {
-        int32_t adjusted_new_batch_size = GB / new_mem_per_input;
-        if (adjusted_new_batch_size < 1) adjusted_new_batch_size = 1;
-        // printf("%s: requested batch size %d, actual new batch size %d\n", __func__, new_batch_size, adjusted_new_batch_size);
-        new_batch_size = adjusted_new_batch_size;
-        new_buf_size = new_mem_per_input * new_batch_size;
-    }
-    if (new_buf_size > (ctx->mem_per_input * ctx->max_batch_n)) {
-        // printf("%s: new_buf_size %lldMB, old_buf_size %lldMB\n", __func__, new_buf_size / (1 << 20), (ctx->mem_per_input * ctx->max_batch_n) / (1 << 20));
-        ctx->buf_compute.resize(new_buf_size);
-        ctx->max_batch_n = new_batch_size;
-    }
-    ctx->mem_per_input = new_mem_per_input;
-}
-
 void bert_free(bert_ctx * ctx) {
-    ggml_free(ctx->model.ctx);
+    ggml_free(ctx->ctx_data);
+    gguf_free(ctx->ctx_gguf);
+
     delete ctx;
 }
 
-void bert_forward(
-    struct bert_ctx * ctx,
-            int32_t   n_threads,
-      bert_vocab_id * tokens,
-            int32_t   n_tokens,
-              float * embeddings) {
-    bert_forward_batch(ctx, n_threads, 1, &tokens, &n_tokens, embeddings ? &embeddings : nullptr);
-}
+//
+// model execution
+//
 
-void bert_forward_batch(
-          bert_ctx *  ctx,
-           int32_t    n_threads,
-           int32_t    n_batch_size,
-     bert_vocab_id ** batch_tokens,
-           int32_t *  n_tokens,
-             float ** batch_embeddings) {
+ggml_cgraph * bert_build_graph(bert_ctx * ctx, int32_t n_batch_size, bert_vocab_id ** batch_tokens, int32_t * n_tokens) {
+    const bert_model & model = ctx->model;
+    const bert_hparams & hparams = model.hparams;
 
-    const bert_model& model = ctx->model;
-
-    int cur_max_n_tokens = 0;
+    // get the max length of the batch
+    int cur_max_len = 0;
     for (int ba = 0; ba < n_batch_size; ba++)
     {
-        if (n_tokens[ba] > cur_max_n_tokens)
-            cur_max_n_tokens = n_tokens[ba];
-    }
-    int cur_max_len = cur_max_n_tokens;
-
-    // batch_embeddings is nullptr for the initial memory requirements run
-    bool mem_req_mode = !batch_embeddings;
-    if (!mem_req_mode && n_batch_size > ctx->max_batch_n) {
-        bert_resize_ctx(ctx, n_batch_size, cur_max_n_tokens);
-        if (n_batch_size > ctx->max_batch_n) {
-            fprintf(stderr, "%s: tried to increase buffers to batch size %d but failed, please increase the limitation of max memory\n", __func__, n_batch_size);
-            return;
-        }
+        if (n_tokens[ba] > cur_max_len)
+            cur_max_len = n_tokens[ba];
     }
 
-    const auto &hparams = model.hparams;
-
+    // extract model params
     const int n_embd = hparams.n_embd;
     const int n_layer = hparams.n_layer;
     const int n_max_tokens = hparams.n_max_tokens;
     const int n_head = hparams.n_head;
-
+    const float layer_norm_eps = hparams.layer_norm_eps;
     const int d_head = n_embd / n_head;
 
-    std::vector<float> result;
-    if (cur_max_n_tokens > n_max_tokens)
-    {
+    // check for token overflow
+    if (cur_max_len > n_max_tokens) {
         fprintf(stderr, "Too many tokens, maximum is %d\n", n_max_tokens);
-        return;
+        return nullptr;
     }
 
-    auto & mem_per_token = ctx->mem_per_token;
-    auto & buf_compute   = ctx->buf_compute;
-
+    // params for graph data
     struct ggml_init_params params = {
-        .mem_size = buf_compute.size,
-        .mem_buffer = buf_compute.data,
-        .no_alloc = false,
+        /*.mem_size   =*/ ctx->buf_compute_meta.size(),
+        /*.mem_buffer =*/ ctx->buf_compute_meta.data(),
+        /*.no_alloc   =*/ true,
     };
 
-    struct ggml_context *ctx0 = ggml_init(params);
-    struct ggml_cgraph gf = {};
+    // initialze computational graph
+    struct ggml_context * ctx0 = ggml_init(params);
+    struct ggml_cgraph * gf = ggml_new_graph_custom(ctx0, BERT_MAX_NODES, false);
 
     // Embeddings. word_embeddings + token_type_embeddings + position_embeddings
     // std::vector<std::vector<bert_vocab_id>> new_batch_tokens({
@@ -853,25 +750,33 @@ void bert_forward_batch(
     struct ggml_tensor *pad_mask = ggml_new_tensor_4d(ctx0, GGML_TYPE_F32, 1, cur_max_len, 1, n_batch_size);
     struct ggml_tensor *positions = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, cur_max_len * n_batch_size);
     struct ggml_tensor *sum = ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, cur_max_len, 1, n_batch_size); // the avg pooler
-    
-    int32_t *token_layer_data = (int32_t *)token_layer->data;
-    float *pad_mask_data = (float *)pad_mask->data;
-    int32_t *pos_data = (int32_t *)positions->data;
-    float *sum_data = (float *)sum->data;
-    for (int ba = 0; ba < n_batch_size; ba++) {
-        for (int i = 0; i < cur_max_len; i++) {
-            int cur_len = n_tokens[ba];
-            if (i < cur_len) {
-                token_layer_data[ba * cur_max_len + i] = batch_tokens[ba][i];
-                pad_mask_data[ba * cur_max_len + i] = 1.0f;
-                sum_data[ba * cur_max_len + i] = 1 / (float)cur_len;
+    ggml_allocr_alloc(ctx->compute_alloc, token_layer);
+    ggml_allocr_alloc(ctx->compute_alloc, pad_mask);
+    ggml_allocr_alloc(ctx->compute_alloc, positions);
+    ggml_allocr_alloc(ctx->compute_alloc, sum);
+
+    // avoid writing input embeddings in memory measure mode
+    if (!ggml_allocr_is_measure(ctx->compute_alloc)) {
+        int32_t *token_layer_data = (int32_t *)token_layer->data;
+        float *pad_mask_data = (float *)pad_mask->data;
+        int32_t *pos_data = (int32_t *)positions->data;
+        float *sum_data = (float *)sum->data;
+
+        for (int ba = 0; ba < n_batch_size; ba++) {
+            for (int i = 0; i < cur_max_len; i++) {
+                int cur_len = n_tokens[ba];
+                if (i < cur_len) {
+                    token_layer_data[ba * cur_max_len + i] = batch_tokens[ba][i];
+                    pad_mask_data[ba * cur_max_len + i] = 1.0f;
+                    sum_data[ba * cur_max_len + i] = 1 / (float)cur_len;
+                }
+                else {
+                    token_layer_data[ba * cur_max_len + i] = 101; // padding
+                    pad_mask_data[ba * cur_max_len + i] = 0.0f;
+                    sum_data[ba * cur_max_len + i] = 0.0f;
+                }
+                pos_data[ba * cur_max_len + i] = i;
             }
-            else {
-                token_layer_data[ba * cur_max_len + i] = 101; // padding
-                pad_mask_data[ba * cur_max_len + i] = 0.0f;
-                sum_data[ba * cur_max_len + i] = 0.0f;
-            }
-            pos_data[ba * cur_max_len + i] = i;
         }
     }
 
@@ -911,7 +816,7 @@ void bert_forward_batch(
 
     struct ggml_tensor * attn_mask = ggml_mul_mat(ctx0, pad_mask, pad_mask);
     attn_mask = ggml_add1(ctx0, attn_mask, ggml_new_f32(ctx0, -1.0f)); // result -0
-    attn_mask = ggml_scale(ctx0, attn_mask, ggml_new_f32(ctx0, 100000.0f)); // BUG: 1e3 will cause overflow?
+    attn_mask = ggml_scale(ctx0, attn_mask, 100000.0f); // BUG: 1e3 will cause overflow?
     attn_mask = ggml_repeat(ctx0, attn_mask, ggml_new_tensor_4d(ctx0, GGML_TYPE_I32, cur_max_len, cur_max_len, n_head, n_batch_size));
     attn_mask = ggml_reshape_3d(ctx0, attn_mask, cur_max_len, cur_max_len, n_head * n_batch_size);
 
@@ -930,7 +835,7 @@ void bert_forward_batch(
 
     // embd norm
     {
-        inpL = ggml_norm(ctx0, inpL);
+        inpL = ggml_norm_inplace(ctx0, inpL, layer_norm_eps);
         inpL = ggml_add(ctx0,
                         ggml_mul(ctx0,
                                     ggml_repeat(ctx0, model.ln_e_w, inpL),
@@ -971,9 +876,7 @@ void bert_forward_batch(
 
             struct ggml_tensor *KQ = ggml_mul_mat(ctx0, K, Q); // -> [N, N, n_head * bs]
             // KQ = soft_max(KQ / sqrt(head width))
-            KQ = ggml_scale(ctx0,
-                            KQ,
-                            ggml_new_f32(ctx0, 1.0f / sqrt((float)d_head)));
+            KQ = ggml_scale(ctx0, KQ, 1.0f / sqrt((float)d_head));
             
             KQ = ggml_add(ctx0, KQ, attn_mask);
             KQ = ggml_soft_max(ctx0, KQ);
@@ -1000,7 +903,7 @@ void bert_forward_batch(
 
         // attention norm
         {
-            cur = ggml_norm(ctx0, cur);
+            cur = ggml_norm_inplace(ctx0, cur, layer_norm_eps);
 
             cur = ggml_add(ctx0,
                             ggml_mul(ctx0,
@@ -1029,7 +932,7 @@ void bert_forward_batch(
 
         // output norm
         {
-            cur = ggml_norm(ctx0, cur);
+            cur = ggml_norm_inplace(ctx0, cur, layer_norm_eps);
 
             cur = ggml_add(ctx0,
                             ggml_mul(ctx0,
@@ -1039,7 +942,6 @@ void bert_forward_batch(
         }
         inpL = cur;
     }
-
 
     inpL = ggml_cont(ctx0, ggml_transpose(ctx0, inpL));
 
@@ -1054,9 +956,55 @@ void bert_forward_batch(
 
     ggml_tensor *output = inpL;
 
-    // run the computation
-    ggml_build_forward_expand(&gf, output);
-    ggml_graph_compute_with_ctx(ctx0, &gf, n_threads);
+    // build the graph
+    ggml_build_forward_expand(gf, output);
+
+    // free context
+    ggml_free(ctx0);
+
+    // return complete graph
+    return gf;
+}
+
+void bert_forward_batch(
+          bert_ctx *  ctx,
+           int32_t    n_threads,
+           int32_t    n_batch_size,
+     bert_vocab_id ** batch_tokens,
+           int32_t *  n_tokens,
+             float *  output) {
+
+
+    // reset alloc buffer to clean the memory from previous invocations
+    ggml_allocr_reset(ctx->compute_alloc);
+
+    // build the inference graph
+    ggml_cgraph * gf = bert_build_graph(ctx, n_batch_size, batch_tokens, n_tokens);
+    ggml_allocr_alloc_graph(ctx->compute_alloc, gf);
+
+#ifdef GGML_PERF
+    // print timing information per ggml operation (for debugging purposes)
+    // requires GGML_PERF to be defined
+    ggml_graph_print(&gf);
+#endif
+
+    if (ggml_backend_is_cpu(ctx->backend)) {
+        ggml_backend_cpu_set_n_threads(ctx->backend, n_threads);
+    }
+
+#ifdef GGML_USE_METAL
+    if (ggml_backend_is_metal(ctx->backend)) {
+        ggml_backend_metal_set_n_cb(ctx->backend, n_threads);
+    }
+#endif
+
+    ggml_backend_graph_compute(ctx->backend, gf);
+
+    // the last node is the embedding tensor
+    struct ggml_tensor * embeddings = gf->nodes[gf->n_nodes - 1];
+
+    // copy the embeddings to the location passed by the user
+    ggml_backend_tensor_get(embeddings, output, 0, ggml_nbytes(embeddings));
 
     /*
     float *data = ggml_get_data_f32(output);
@@ -1071,67 +1019,15 @@ void bert_forward_batch(
         }
     }
     */
-
-    /*
-    float *data = ggml_get_data_f32(output); // attn_mask_data [N, N, n_head * bs]
-    printf("\n\n");
-    for (int ba = 0; ba < n_batch_size; ba++) {
-        printf("sample[%d]: \n", ba);
-        for (int token_id = 0; token_id < cur_max_len; token_id++) {
-            for (int token_id2 = 0; token_id2 < cur_max_len; token_id2++) {
-                printf(" %1.1f ", data[ba * cur_max_len * cur_max_len * n_head + 0 + token_id * cur_max_len + token_id2]);
-            }
-            printf("\n");
-        }
-    }
-    */
-
-    #ifdef GGML_PERF
-        // print timing information per ggml operation (for debugging purposes)
-        // requires GGML_PERF to be defined
-        ggml_graph_print(&gf);
-    #endif
-
-    if (!mem_req_mode) {
-        float * output_data = (float *)output->data;
-        for (int ba = 0; ba < n_batch_size; ba++){
-            memcpy(batch_embeddings[ba], output_data + ba * n_embd, sizeof(float) * n_embd);
-        }
-    } else {
-        mem_per_token = ggml_used_mem(ctx0) / ( cur_max_len * n_batch_size);
-
-        // printf("used_mem = %zu KB \n", ggml_used_mem(ctx0) / 1024);
-        // printf("mem_per_token = %zu KB \n", mem_per_token / 1024);
-    }
-
-    ggml_free(ctx0);
-}
-
-void bert_encode(
-    struct bert_ctx * ctx,
-            int32_t   n_threads,
-         const char * texts,
-              float * embeddings) {
-    bert_encode_batch(ctx, n_threads, 1, 1, &texts, &embeddings);
 }
 
 void bert_encode_batch(
-    struct bert_ctx *  ctx,
-            int32_t    n_threads,
-            int32_t    n_batch_size,
-            int32_t    n_inputs,
-         const char ** texts,
-              float ** embeddings) {
-
-    /*
-    if (n_batch_size > n_inputs) {
-        n_batch_size = n_inputs;
-    }
-    if (n_batch_size > ctx->max_batch_n) {
-        bert_resize_ctx(ctx, n_batch_size);
-        n_batch_size = ctx->max_batch_n;
-    }
-    */
+       struct bert_ctx *  ctx,
+               int32_t    n_threads,
+               int32_t    n_batch_size,
+               int32_t    n_inputs,
+            const char ** texts,
+                 float *  embeddings) {
 
     int32_t N = bert_n_max_tokens(ctx);
 
@@ -1181,4 +1077,22 @@ void bert_encode_batch(
             bert_forward_batch(ctx, n_threads, n_batch_size, &sorted_tokens[i], &sorted_n_tokens[i], &sorted_embeddings[i]);
         }
     }
+}
+
+void bert_forward(
+    struct bert_ctx * ctx,
+            int32_t   n_threads,
+      bert_vocab_id * tokens,
+            int32_t   n_tokens,
+              float * embeddings) {
+    bert_forward_batch(ctx, n_threads, 1, &tokens, &n_tokens, embeddings ? &embeddings : nullptr);
+}
+
+void bert_encode(
+       struct bert_ctx * ctx,
+    struct ggml_allocr * allocr,
+               int32_t   n_threads,
+            const char * texts,
+                 float * embeddings) {
+    bert_encode_batch(ctx, n_threads, 1, 1, &texts, &embeddings);
 }

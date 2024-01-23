@@ -1,113 +1,88 @@
 import sys
-import struct
 import json
 import torch
 import numpy as np
-import os
+from pathlib import Path
+from gguf import GGUFWriter, GGMLQuantizationType
 
 from transformers import AutoModel, AutoTokenizer
 
-if len(sys.argv) < 3:
-    print("Usage: convert-h5-to-ggml.py dir-model [use-f32]\n")
-    print("  ftype == 0 -> float32")
-    print("  ftype == 1 -> float16")
+# primay usage
+if len(sys.argv) < 2:
+    print('Usage: convert-to-ggml.py dir-model [use-f32]\n')
+    print('  ftype == 1 -> float32')
+    print('  ftype == 0 -> float16')
     sys.exit(1)
 
 # output in the same directory as the model
-dir_model = sys.argv[1]
-fname_out = sys.argv[1] + "/ggml-model.bin"
+dir_model = Path(sys.argv[1])
+ftype = int(sys.argv[2]) if len(sys.argv) > 2 else 0
 
-# Check if the directory exists
-if not os.path.exists(dir_model):
-    # If not, download the model from Huggingface
-    model_name = f'sentence-transformers/{dir_model}'
-    print(f"Directory {dir_model} does not exist. Downloading model {model_name}...")
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModel.from_pretrained(model_name)
-    tokenizer.save_pretrained(dir_model)
-    model.save_pretrained(dir_model)
+# map from ftype to string
+ftype_str = 'f32' if ftype == 1 else 'f16'
+fname_out = dir_model / f'ggml-model-{ftype_str}.bin'
 
-with open(dir_model + "/tokenizer.json", "r", encoding="utf-8") as f:
+# heck if the directory existsc
+if not dir_model.exists():
+    print(f'Directory {dir_model} does not exist.')
+
+# load hf modle data
+with open(dir_model / 'tokenizer.json', 'r', encoding='utf-8') as f:
     encoder = json.load(f)
 
-with open(dir_model + "/config.json", "r", encoding="utf-8") as f:
+with open(dir_model / 'config.json', 'r', encoding='utf-8') as f:
     hparams = json.load(f)
 
-with open(dir_model + "/vocab.txt", "r", encoding="utf-8") as f:
+with open(dir_model / 'vocab.txt', 'r', encoding='utf-8') as f:
     vocab = f.readlines()
-# possible data types
-#   ftype == 0 -> float32
-#   ftype == 1 -> float16
-#
-# map from ftype to string
-ftype_str = ["f32", "f16"]
 
-ftype = 1
-if len(sys.argv) > 2:
-    ftype = int(sys.argv[2])
-    if ftype < 0 or ftype > 1:
-        print("Invalid ftype: " + str(ftype))
-        sys.exit(1)
-    fname_out = sys.argv[1] + "/ggml-model-" + ftype_str[ftype] + ".bin"
-
-
+# load tokenizer and model
 tokenizer = AutoTokenizer.from_pretrained(dir_model)
 model = AutoModel.from_pretrained(dir_model, low_cpu_mem_usage=True)
-print (model)
 
-print(tokenizer.encode('I believe the meaning of life is'))
-
-list_vars = model.state_dict()
-for name in list_vars.keys():
-    print(name, list_vars[name].shape, list_vars[name].dtype)
-
-fout = open(fname_out, "wb")
-
+print()
+print('HPARAMS:')
 print(hparams)
+print()
 
-fout.write(struct.pack("i", 0x67676d6c)) # magic: ggml in hex
-fout.write(struct.pack("i", hparams["vocab_size"]))
-fout.write(struct.pack("i", hparams["max_position_embeddings"]))
-fout.write(struct.pack("i", hparams["hidden_size"]))
-fout.write(struct.pack("i", hparams["intermediate_size"]))
-fout.write(struct.pack("i", hparams["num_attention_heads"]))
-fout.write(struct.pack("i", hparams["num_hidden_layers"]))
-fout.write(struct.pack("i", ftype))
+# start to write GGUF file
+gguf_writer = GGUFWriter(fname_out, 'bert')
 
-for i in range(hparams["vocab_size"]):
-    text = vocab[i][:-1] # strips newline at the end
-    #print(f"{i}:{text}")
-    data = bytes(text, 'utf-8')
-    fout.write(struct.pack("i", len(data)))
-    fout.write(data)
+# write metadata
+file_type = GGMLQuantizationType.F32 if ftype == 1 else GGMLQuantizationType.F16
+gguf_writer.add_name('BERT')
+gguf_writer.add_description('GGML BERT model')
+gguf_writer.add_file_type(file_type)
 
-for name in list_vars.keys():
-    data = list_vars[name].squeeze().numpy()
+# write kv flags
+gguf_writer.add_uint32('vocab_size', hparams['vocab_size'])
+gguf_writer.add_uint32('max_position_embedding', hparams['max_position_embeddings'])
+gguf_writer.add_uint32('hidden_size', hparams['hidden_size'])
+gguf_writer.add_uint32('intermediate_size', hparams['intermediate_size'])
+gguf_writer.add_uint32('num_attention_heads', hparams['num_attention_heads'])
+gguf_writer.add_uint32('num_hidden_layers', hparams['num_hidden_layers'])
+gguf_writer.add_float32('layer_norm_eps', hparams['layer_norm_eps'])
+
+# write vocab
+gguf_writer.add_token_list(vocab)
+
+# write tensors
+for name, data in model.state_dict().items():
+    # skip some params
     if name in ['embeddings.position_ids', 'pooler.dense.weight', 'pooler.dense.bias']:
         continue
-    print("Processing variable: " + name + " with shape: ", data.shape)
-
-    n_dims = len(data.shape);
-
-    # ftype == 0 -> float32, ftype == 1 -> float16
-    if ftype == 1 and name[-7:] == ".weight" and n_dims == 2:
-            print("  Converting to float16")
-            data = data.astype(np.float16)
-            l_type = 1
     else:
-        l_type = 0
+        print(f'{name}: {data.dtype} {list(data.shape)}')
+
+    # convert weights to f16?
+    dtype = torch.float32 if ftype == 1 else torch.float16
+    data = data.to(dtype).numpy()
 
     # header
-    str = name.encode('utf-8')
-    fout.write(struct.pack("iii", n_dims, len(str), l_type))
-    for i in range(n_dims):
-        fout.write(struct.pack("i", data.shape[n_dims - 1 - i]))
-    fout.write(str);
+    gguf_writer.add_tensor(name, data)
 
-    # data
-    data.tofile(fout)
-
-fout.close()
-
-print("Done. Output file: " + fname_out)
-print("")
+# execute and close writer
+gguf_writer.write_header_to_file()
+gguf_writer.write_kv_data_to_file()
+gguf_writer.write_tensors_to_file()
+gguf_writer.close()

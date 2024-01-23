@@ -1,6 +1,8 @@
 #ifndef BERT_H
 #define BERT_H
 
+#include "ggml.h"
+
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -14,9 +16,7 @@ extern "C" {
 struct bert_params
 {
     int32_t n_threads = 6;
-    int32_t port = 8080; // server mode port to bind
-
-    const char* model = "models/all-MiniLM-L6-v2/ggml-model-q4_0.bin"; // model path
+    const char* model = "models/all-MiniLM-L6-v2/ggml-model-q4_0.bin";
     const char* prompt = "test prompt";
 };
 
@@ -37,6 +37,20 @@ BERT_API void bert_encode(
     const char * texts,
     float * embeddings);
 
+BERT_API ggml_cgraph * bert_build_graph(
+    bert_ctx * ctx,
+    int32_t n_batch_size,
+    bert_vocab_id ** batch_tokens,
+    int32_t * n_tokens);
+
+BERT_API void bert_forward_batch(
+    bert_ctx * ctx,
+    int32_t n_threads,
+    int32_t n_batch_size,
+    bert_vocab_id ** batch_tokens,
+    int32_t * n_tokens,
+    float * batch_embeddings);
+
 // n_batch_size - how many to process at a time
 // n_inputs     - total size of texts and embeddings arrays
 BERT_API void bert_encode_batch(
@@ -45,7 +59,7 @@ BERT_API void bert_encode_batch(
     int32_t n_batch_size,
     int32_t n_inputs,
     const char ** texts,
-    float ** embeddings);
+    float * embeddings);
 
 // Api for separate tokenization & eval
 
@@ -62,15 +76,6 @@ BERT_API void bert_forward(
     bert_vocab_id * tokens,
     int32_t n_tokens,
     float * embeddings);
-
-// NOTE: for batch processing the longest input must be first
-BERT_API void bert_forward_batch(
-    struct bert_ctx * ctx,
-    int32_t n_threads,
-    int32_t n_batch_size,
-    bert_vocab_id ** batch_tokens,
-    int32_t * n_tokens,
-    float ** batch_embeddings);
 
 BERT_API int32_t bert_n_embd(bert_ctx * ctx);
 BERT_API int32_t bert_n_max_tokens(bert_ctx * ctx);
