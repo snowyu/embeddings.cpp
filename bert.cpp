@@ -2,6 +2,10 @@
 #include "ggml.h"
 #include "ggml/ggml-backend.h"
 
+#ifdef GGML_USE_CUBLAS
+#include "ggml-cuda.h"
+#endif
+
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -546,12 +550,12 @@ struct bert_ctx * bert_load_from_file(const char *fname) {
     // initialize backend
 #ifdef GGML_USE_CUBLAS
     new_bert->backend = ggml_backend_cuda_init(0);
-    printf("%s: BERT using CUDA backend\n", __func__);
+    printf("%s: BERT using CUDA backend: %p\n", __func__, new_bert->backend);
 #endif
 
 #ifdef GGML_USE_METAL
     new_bert->backend = ggml_backend_metal_init();
-    printf("%s: BERT using Metal backend\n", __func__);
+    printf("%s: BERT using Metal backend: %p\n", __func__, new_bert->backend);
 #endif
 
     if (!new_bert->backend) {
@@ -681,7 +685,7 @@ struct bert_ctx * bert_load_from_file(const char *fname) {
         new_bert->compute_buffer = ggml_backend_alloc_buffer(new_bert->backend, compute_memory_buffer_size);
         new_bert->compute_alloc = ggml_allocr_new_from_buffer(new_bert->compute_buffer);
 
-        printf("%s: compute allocated memory: %.2f MB\n", __func__, compute_memory_buffer_size / 1024.0/ 1024.0);
+        printf("%s: compute allocated memory: %.2f MB\n", __func__, compute_memory_buffer_size / 1024.0 / 1024.0);
     }
 
     return new_bert;
@@ -748,10 +752,10 @@ ggml_cgraph * bert_build_graph(bert_ctx * ctx, bert_batch batch) {
 
     // avoid writing input embeddings in memory measure mode
     if (!ggml_allocr_is_measure(ctx->compute_alloc)) {
-        int32_t *token_layer_data = (int32_t *)token_layer->data;
-        float *pad_mask_data = (float *)pad_mask->data;
-        int32_t *pos_data = (int32_t *)positions->data;
-        float *sum_data = (float *)sum->data;
+        int32_t * token_layer_data = (int32_t*)malloc(ggml_nbytes(token_layer));
+        float * pad_mask_data = (float*)malloc(ggml_nbytes(pad_mask));
+        int32_t * pos_data = (int32_t*)malloc(ggml_nbytes(positions));
+        float * sum_data = (float*)malloc(ggml_nbytes(sum));
 
         for (int ba = 0; ba < n_batch_size; ba++) {
             for (int i = 0; i < cur_max_len; i++) {
@@ -769,6 +773,16 @@ ggml_cgraph * bert_build_graph(bert_ctx * ctx, bert_batch batch) {
                 pos_data[ba * cur_max_len + i] = i;
             }
         }
+
+        ggml_backend_tensor_set(token_layer, token_layer_data, 0, ggml_nbytes(token_layer));
+        ggml_backend_tensor_set(pad_mask, pad_mask_data, 0, ggml_nbytes(pad_mask));
+        ggml_backend_tensor_set(positions, pos_data, 0, ggml_nbytes(positions));
+        ggml_backend_tensor_set(sum, sum_data, 0, ggml_nbytes(sum));
+
+        free(token_layer_data);
+        free(pad_mask_data);
+        free(pos_data);
+        free(sum_data);
     }
 
     // outer product the padding mask to kill off outside

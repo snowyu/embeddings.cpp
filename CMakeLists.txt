@@ -23,6 +23,7 @@ option(BERT_PERF                   "bert: enable performance logging"           
 option(BERT_AVX                    "bert: enable AVX"                                     ON)
 option(BERT_AVX2                   "bert: enable AVX2"                                    ON)
 option(BERT_FMA                    "bert: enable FMA"                                     ON)
+option(BERT_CUBLAS                 "bert: enable cuBLAS"                                  OFF)
 
 #
 # Compile flags
@@ -75,6 +76,9 @@ if (${CMAKE_SYSTEM_PROCESSOR} MATCHES "^(x86_64|i686|AMD64)$")
     endif()
     if (BERT_AVX2)
         add_compile_options(-mavx2)
+    endif()
+    if (GGML_CUBLAS)
+        add_compile_definitions(GGML_USE_CUBLAS)
     endif()
 else()
     message(STATUS "Unknown architecture")
