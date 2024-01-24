@@ -376,17 +376,6 @@ bert_tokens bert_tokenize(struct bert_ctx * ctx, bert_string text, int32_t n_max
         words.push_back(new_str.substr(l, (r - l)));
     }
 
-    /*
-    assert (words.size() == words.size());
-    for (auto i = 0; i < words.size(); i++)
-    {
-        if (words[i] != words[i])
-        {
-            printf("words[%d] = %s, words[%d] = %s\n", i, words[i].c_str(), i, words[i].c_str());
-        }
-    }
-    */
-
     int32_t t = 0;
     int32_t prev_t = 0;
 
@@ -396,14 +385,14 @@ bert_tokens bert_tokenize(struct bert_ctx * ctx, bert_string text, int32_t n_max
 
     // find the longest tokens that form the words:
     for (const auto &word : words) {
-        if (word.size() == 0) {
+        int n = word.size();
+        if (n == 0) {
             continue;
         }
         prev_t = t;
 
         int i = 0;
-        int n = word.size();
-        auto *token_map = &vocab.token_to_id;
+        auto * token_map = &vocab.token_to_id;
     loop:
         while (i < n) {
             if (t >= n_max_tokens - 1) {
@@ -422,7 +411,7 @@ bert_tokens bert_tokenize(struct bert_ctx * ctx, bert_string text, int32_t n_max
                 --j;
             }
             if (j == i) {
-                // fprintf(stderr, "%s: unknown token '%s'\n", __func__, word.substr(i, 1).data());
+                fprintf(stderr, "%s: unknown token '%s'\n", __func__, word.substr(i, 1).data());
                 token_map = &vocab.subword_token_to_id;
                 ++i;
             }
@@ -782,40 +771,6 @@ ggml_cgraph * bert_build_graph(bert_ctx * ctx, bert_batch batch) {
         }
     }
 
-    /*
-    for (int ba = 0; ba < n_batch_size; ba++) {
-        printf("sample %d in the batch sum_data: \n", ba);
-        for (int i = 0; i < cur_max_len; i++)
-        {
-            printf(" %1.3f ", sum_data[ba * cur_max_len + i]);
-            }
-        printf("\n");
-    }
-    */
-
-    /*
-    for (int ba = 0; ba < n_batch_size; ba++) {
-        printf("sample %d in the batch token_data: ", ba);
-        for (int i = 0; i < cur_max_len; i++)
-        {
-            printf(" %1.3d ", token_layer_data[ba * cur_max_len + i]);
-        }
-        printf("\n");
-    }
-    */
-
-    /*
-    // print pad mask data
-    for (int ba = 0; ba < n_batch_size; ba++) {
-        printf("sample %d in the batch pad_mask_data: ", ba);
-        for (int i = 0; i < cur_max_len; i++)
-        {
-            printf(" %1.3f ", pad_mask_data[ba * cur_max_len + i]);
-        }
-        printf("\n");
-    }
-    */
-
     // outer product the padding mask to kill off outside
     struct ggml_tensor * attn_mask = ggml_mul_mat(ctx0, pad_mask, pad_mask); // [L, L, 1, B]
     attn_mask = ggml_add1(ctx0, attn_mask, ggml_new_f32(ctx0, -1.0f)); // result -0
@@ -961,27 +916,10 @@ void bert_forward_batch(bert_ctx * ctx, bert_batch batch, float * embeddings, in
 
     // the last node is the embedding tensor
     struct ggml_tensor * output = gf->nodes[gf->n_nodes - 1];
-    printf(
-        "%s: got output tensor: type = %s, ndim = %d, nelem = %d, nrows = %d\n",
-        __func__, ggml_type_name(output->type), ggml_n_dims(output), ggml_nelements(output), ggml_nrows(output)
-    );
+    tensor_stats(output);
 
     // copy the embeddings to the location passed by the user
     ggml_backend_tensor_get(output, embeddings, 0, ggml_nbytes(output));
-
-    /*
-    float *data = ggml_get_data_f32(output);
-    printf("\n\n");
-    for (int ba = 0; ba < n_batch_size; ba++) {
-        for (int i = 0; i < 4; i++) {
-            printf("sample[%d] token [%d]: ", ba, i);
-            for (int j = 0; j < 10; j++) {
-                printf(" %1.3f ", data[ba * n_embd * cur_max_len + i * n_embd + j]);
-            }
-            printf("\n");
-        }
-    }
-    */
 }
 
 void bert_encode_batch(struct bert_ctx * ctx, bert_strings texts, float * embeddings, int32_t n_threads) {

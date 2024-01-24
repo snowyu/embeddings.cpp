@@ -39,9 +39,6 @@ int main(int argc, char ** argv) {
     int64_t t_mid_us = ggml_time_us();
     int64_t t_token_us = t_mid_us - t_start_us;
 
-    printf("%s: number of tokens in prompt = %zu\n", __func__, tokens.size());
-    printf("\n");
-
     for (auto & tok : tokens) {
         printf("%d -> %s\n", tok, bert_vocab_id_to_token(bctx, tok));
     }
@@ -55,7 +52,7 @@ int main(int argc, char ** argv) {
     int64_t t_end_us = ggml_time_us();
     int64_t t_eval_us = t_end_us - t_mid_us;
     
-    printf("[");
+    printf("[ ");
     for(auto e : embeddings) {
         printf("%1.4f, ", e);
     }
