@@ -68,18 +68,18 @@ gguf_writer.add_token_list(vocab)
 
 # write tensors
 for name, data in model.state_dict().items():
-    # skip some params
-    if name in ['embeddings.position_ids', 'pooler.dense.weight', 'pooler.dense.bias']:
-        continue
+    # get correct dtype
+    if 'LayerNorm' in name or 'bias' in name:
+        dtype = torch.float32
     else:
-        print(f'{name}: {data.dtype} {list(data.shape)}')
+        dtype = torch.float32 if ftype == 1 else torch.float16
 
-    # convert weights to f16?
-    dtype = torch.float32 if ftype == 1 else torch.float16
-    data = data.to(dtype).numpy()
+    # do conversion
+    data = data.to(dtype)
+    print(f'{name}: {dtype} {list(data.shape)}')
 
     # header
-    gguf_writer.add_tensor(name, data)
+    gguf_writer.add_tensor(name, data.numpy())
 
 # execute and close writer
 gguf_writer.write_header_to_file()
