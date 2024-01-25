@@ -1,6 +1,10 @@
 #include "ggml.h"
 #include "ggml-backend.h"
 
+#ifdef GGML_USE_CUBLAS
+#include "ggml-cuda.h"
+#endif
+
 #include <string>
 #include <vector>
 #include <iostream>
@@ -52,6 +56,14 @@ static struct ggml_tensor * get_tensor(struct ggml_context * ctx, const std::str
     return cur;
 }
 
+static void tensor_stats(ggml_tensor * t) {
+    int32_t src0 = t->src[0] ? t->src[0]->backend : -1;
+    int32_t src1 = t->src[1] ? t->src[1]->backend : -1;
+    printf(
+        "type = %s, dims = %d, shape = (%d, %d, %d, %d), backend = %d, src0 = %d, src1 = %d\n",
+        ggml_type_name(t->type), ggml_n_dims(t), t->ne[0], t->ne[1], t->ne[2], t->ne[3], t->backend, src0, src1
+    );
+}
 
 //
 // model definition
@@ -73,32 +85,34 @@ ggml_cgraph * basic_build_graph(basic_ctx * ctx, basic_batch batch) {
     };
 
     // initialze computational graph
-    struct ggml_context * ctx0 = ggml_init(params);
-    struct ggml_cgraph * gf = ggml_new_graph_custom(ctx0, BASIC_MAX_NODES, false);
+    struct ggml_context * ctx_compute = ggml_init(params);
+    struct ggml_cgraph * gf = ggml_new_graph_custom(ctx_compute, BASIC_MAX_NODES, false);
 
     // construct input tensors
-    struct ggml_tensor *input = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, n_size, n_batch_size);
+    struct ggml_tensor *input = ggml_new_tensor_2d(ctx_compute, GGML_TYPE_F32, n_size, n_batch_size);
     ggml_set_name(input, "input");
     ggml_allocr_alloc(ctx->compute_alloc, input);
 
     // avoid writing input embeddings in memory measure mode
     if (!ggml_allocr_is_measure(ctx->compute_alloc)) {
-        float *input_data = (float *)input->data;
+        float * input_data = (float*)malloc(ggml_nbytes(input));
         for (int ba = 0; ba < n_batch_size; ba++) {
             for (int i = 0; i < n_size; i++) {
                 input_data[ba * n_size + i] = batch[ba][i];
             }
         }
+        ggml_backend_tensor_set(input, input_data, 0, ggml_nbytes(input));
+        free(input_data);
     }
 
     // the only computation
-    ggml_tensor *output = ggml_mul_mat(ctx0, input, model.weights); // [bs, ns] * [ns] -> [bs]
+    ggml_tensor * output = ggml_mul_mat(ctx_compute, input, model.weights); // [bs, ns] * [ns] -> [bs]
 
     // build the graph
     ggml_build_forward_expand(gf, output);
 
     // free context
-    ggml_free(ctx0);
+    ggml_free(ctx_compute);
 
     // return complete graph
     return gf;
@@ -119,17 +133,26 @@ struct basic_ctx * basic_create_model() {
     // get hparams
     const int32_t n_size = hparams.n_size;
 
-    // initialize backend
-    new_basic->backend = ggml_backend_cpu_init();
-    printf("%s: BASIC using CPU backend\n", __func__);
+    // initialize advanced backend
+#ifdef GGML_USE_CUBLAS
+    new_basic->backend = ggml_backend_cuda_init(0);
+    if (!new_basic->backend) {
+        printf("%s: ggml_backend_cuda_init() failed\n", __func__);
+    } else {
+        printf("%s: BERT using CUDA backend\n", __func__);
+    }
+#endif
+
+    // fall back to CPU backend
+    if (!new_basic->backend) {
+        new_basic->backend = ggml_backend_cpu_init();
+        printf("%s: BERT using CPU backend\n", __func__);
+    }
 
     // load tensors
     {
-        const int n_tensors = 1;
-
-        std::vector<uint8_t> read_buf;
         struct ggml_init_params params = {
-            /*.mem_size =*/ (n_tensors + 1) * ggml_tensor_overhead(),
+            /*.mem_size =*/ 2 * ggml_tensor_overhead(),
             /*.mem_buffer =*/ NULL,
             /*.no_alloc =*/ true,
         };
@@ -144,21 +167,32 @@ struct basic_ctx * basic_create_model() {
         // add tensors to context
         const char * name = "weights";
         struct ggml_tensor * weights = ggml_new_tensor_1d(new_basic->ctx_data, GGML_TYPE_F32, n_size);
+        ggml_set_name(weights, name);
         size_t weights_size = ggml_nbytes(weights);
-
-        // copy into context
-        struct ggml_tensor * cur = ggml_dup_tensor(new_basic->ctx_data, weights);
-        ggml_set_name(cur, name);
 
         // alloc memory and offload data
         new_basic->params_buffer = ggml_backend_alloc_buffer(new_basic->backend, weights_size);
         ggml_allocr* alloc = ggml_allocr_new_from_buffer(new_basic->params_buffer);
-        ggml_allocr_alloc(alloc, cur);
+        ggml_allocr_alloc(alloc, weights);
 
-        // set weights to one
-        float * data = (float *)cur->data;
+        // get local buffer
+        float * data;
+        std::vector<float> read_buf;
+        if (ggml_backend_buffer_is_host(new_basic->params_buffer)) {
+            data = (float*)weights->data;
+        } else {
+            read_buf.resize(weights_size);
+            data = reinterpret_cast<float*>(read_buf.data());
+        }
+
+        // fill in on host
         for (int i = 0; i < n_size; i++) {
             data[i] = 1.0;
+        }
+
+        // copy to device
+        if (!ggml_backend_buffer_is_host(new_basic->params_buffer)) {
+            ggml_backend_tensor_set(weights, data, 0, weights_size);
         }
 
         // free memory
@@ -166,12 +200,11 @@ struct basic_ctx * basic_create_model() {
     }
 
     // use get_tensors to populate basic_model
-    {
-        model.weights = get_tensor(new_basic->ctx_data, "weights");
-    }
+    model.weights = get_tensor(new_basic->ctx_data, "weights");
 
     // allocate space for graph
     {
+        // measure compute graph memory usage
         new_basic->buf_compute_meta.resize(GGML_DEFAULT_GRAPH_SIZE * ggml_tensor_overhead() + ggml_graph_overhead());
         new_basic->compute_alloc = ggml_allocr_new_measure_from_backend(new_basic->backend);
 
@@ -180,12 +213,15 @@ struct basic_ctx * basic_create_model() {
         basic_batch batch = {input, input};
         ggml_cgraph * gf = basic_build_graph(new_basic, batch);
 
+        // get measurement results
         size_t compute_memory_buffer_size = ggml_allocr_alloc_graph(new_basic->compute_alloc, gf);
         ggml_allocr_free(new_basic->compute_alloc);
+
+        // create real compute buffer and allocator
         new_basic->compute_buffer = ggml_backend_alloc_buffer(new_basic->backend, compute_memory_buffer_size);
         new_basic->compute_alloc = ggml_allocr_new_from_buffer(new_basic->compute_buffer);
 
-        printf("%s: compute allocated memory: %.2f MB\n", __func__, compute_memory_buffer_size / 1024.0/ 1024.0);
+        printf("%s: compute allocated memory: %.2f MB\n", __func__, compute_memory_buffer_size / 1024.0 / 1024.0);
     }
 
     return new_basic;
@@ -218,7 +254,7 @@ void basic_forward_batch(basic_ctx * ctx, basic_batch batch, float * output) {
     // the last node is the embedding tensor
     struct ggml_tensor * final = gf->nodes[gf->n_nodes - 1];
     printf(
-        "%s: got final tensor: type = %s, ndim = %d, nelem = %d, nrows = %d\n",
+        "%s: type = %s, ndim = %d, nelem = %d, nrows = %d\n",
         __func__, ggml_type_name(final->type), ggml_n_dims(final), ggml_nelements(final), ggml_nrows(final)
     );
 
