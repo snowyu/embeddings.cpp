@@ -916,10 +916,13 @@ ggml_cgraph * bert_build_graph(bert_ctx * ctx, bert_batch batch) {
         inpL = cur;
     }
 
-    // pool and norm (sum = [L, 1, B])
+    // pooling (sum = [L, 1, B])
     inpL = ggml_mul_mat(ctx0, ggml_cont(ctx0, ggml_transpose(ctx0, inpL)), sum); // [E, 1, B]
     inpL = ggml_reshape_2d(ctx0, inpL, n_embd, n_batch_size); // [E, B]
+
+    // l2 normalize
     inpL = ggml_rms_norm(ctx0, inpL, layer_norm_eps); // [E, B]
+    inpL = ggml_scale(ctx0, inpL, 1.0f / sqrt((float)n_embd)); // [E, B] (since rms_norm does average instead of sum)
 
     // final output
     ggml_tensor * output = inpL;
