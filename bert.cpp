@@ -203,6 +203,7 @@ void bert_print_usage(char **argv, const bert_params &params) {
     fprintf(stderr, "                        prompt to start generation with (default: random)\n");
     fprintf(stderr, "  -m FNAME, --model FNAME\n");
     fprintf(stderr, "                        model path (default: %s)\n", params.model);
+    fprintf(stderr, "  -c, --cpu             use CPU backend (default: use CUDA if available)\n");
     fprintf(stderr, "\n");
 }
 
@@ -217,6 +218,8 @@ bool bert_params_parse(int argc, char **argv, bert_params &params) {
             params.prompt = argv[++i];
         } else if (arg == "-m" || arg == "--model") {
             params.model = argv[++i];
+        } else if (arg == "-c" || arg == "--cpu") {
+            params.use_cpu = true;
         } else if (arg == "-h" || arg == "--help") {
             bert_print_usage(argv, params);
             exit(0);
@@ -440,8 +443,8 @@ bert_tokens bert_tokenize(struct bert_ctx * ctx, bert_string text, int32_t n_max
 // loading and setup
 //
 
-struct bert_ctx * bert_load_from_file(const char *fname) {
-    printf("%s: loading model from '%s' - please wait ...\n", __func__, fname);
+struct bert_ctx * bert_load_from_file(const char *fname, bool use_cpu) {
+    printf("%s: loading model from '%s (use_cpu = %b)' - please wait ...\n", __func__, fname, use_cpu);
 
     struct ggml_context * ctx_ggml = NULL;
 
@@ -551,11 +554,13 @@ struct bert_ctx * bert_load_from_file(const char *fname) {
 
     // initialize advanced backend
 #ifdef GGML_USE_CUBLAS
-    new_bert->backend = ggml_backend_cuda_init(0);
-    if (!new_bert->backend) {
-        printf("%s: ggml_backend_cuda_init() failed\n", __func__);
-    } else {
-        printf("%s: BERT using CUDA backend\n", __func__);
+    if (!use_cpu) {
+        new_bert->backend = ggml_backend_cuda_init(0);
+        if (!new_bert->backend) {
+            printf("%s: ggml_backend_cuda_init() failed\n", __func__);
+        } else {
+            printf("%s: BERT using CUDA backend\n", __func__);
+        }
     }
 #endif
 
@@ -911,13 +916,10 @@ ggml_cgraph * bert_build_graph(bert_ctx * ctx, bert_batch batch) {
         inpL = cur;
     }
 
-    // pooler (sum = [L, 1, B])
+    // pool and norm (sum = [L, 1, B])
     inpL = ggml_mul_mat(ctx0, ggml_cont(ctx0, ggml_transpose(ctx0, inpL)), sum); // [E, 1, B]
-
-    // normalizer
-    // ggml_tensor * length = ggml_sqrt(ctx0, ggml_sum_rows(ctx0, ggml_sqr(ctx0, inpL))); // [1, 1, B]
-    // inpL = ggml_div(ctx0, inpL, ggml_repeat(ctx0, length, inpL)); // [E, 1, B]
     inpL = ggml_reshape_2d(ctx0, inpL, n_embd, n_batch_size); // [E, B]
+    inpL = ggml_rms_norm(ctx0, inpL, layer_norm_eps); // [E, B]
 
     // final output
     ggml_tensor * output = inpL;
@@ -972,7 +974,6 @@ void bert_forward_batch(bert_ctx * ctx, bert_batch batch, float * embeddings, in
 
     // the last node is the embedding tensor
     struct ggml_tensor * output = gf->nodes[gf->n_nodes - 1];
-    tensor_stats(output);
 
     // copy the embeddings to the location passed by the user
     ggml_backend_tensor_get(output, embeddings, 0, ggml_nbytes(output));
