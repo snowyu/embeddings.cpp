@@ -56,6 +56,14 @@ BERT_API void bert_encode_batch(
     float * embeddings,
     int32_t n_threads);
 
+// takes c-style list of strings
+BERT_API void bert_encode_batch_c(
+    struct bert_ctx * ctx,
+    const char ** texts,
+    float * embeddings,
+    int32_t n_input,
+    int32_t n_threads);
+
 // Api for separate tokenization & eval
 
 BERT_API bert_tokens bert_tokenize(

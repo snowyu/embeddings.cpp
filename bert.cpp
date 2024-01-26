@@ -961,15 +961,23 @@ void bert_forward_batch(bert_ctx * ctx, bert_batch batch, float * embeddings, in
 
 void bert_encode_batch(struct bert_ctx * ctx, bert_strings texts, float * embeddings, int32_t n_threads) {
     int32_t N = bert_n_max_tokens(ctx);
-    int32_t n_inputs = texts.size();
+    int32_t n_input = texts.size();
 
     bert_batch batch;
-    for (int i = 0; i < n_inputs; i++) {
+    for (int i = 0; i < n_input; i++) {
         bert_tokens tokens = bert_tokenize(ctx, texts[i], N);
         batch.push_back(tokens);
     }
 
     bert_forward_batch(ctx, batch, embeddings, n_threads);
+}
+
+void bert_encode_batch_c(struct bert_ctx * ctx, const char ** texts, float * embeddings, int32_t n_input, int32_t n_threads) {
+    bert_strings strings;
+    for (int i = 0; i < n_input; i++) {
+        strings.push_back(texts[i]);
+    }
+    bert_encode_batch(ctx, strings, embeddings, n_threads);
 }
 
 void bert_forward(struct bert_ctx * ctx, bert_tokens tokens, float * embeddings, int32_t n_threads) {
