@@ -45,7 +45,7 @@ BERT_API ggml_cgraph * bert_build_graph(
 BERT_API void bert_forward_batch(
     bert_ctx * ctx,
     bert_batch tokens,
-    float ** embeddings,
+    float * embeddings,
     int32_t n_threads);
 
 // n_batch_size - how many to process at a time
@@ -53,7 +53,7 @@ BERT_API void bert_forward_batch(
 BERT_API void bert_encode_batch(
     struct bert_ctx * ctx,
     bert_strings texts,
-    float ** embeddings,
+    float * embeddings,
     int32_t n_threads);
 
 // Api for separate tokenization & eval

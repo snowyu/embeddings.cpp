@@ -39,22 +39,26 @@ int main(int argc, char ** argv) {
     int64_t t_mid_us = ggml_time_us();
     int64_t t_token_us = t_mid_us - t_start_us;
 
+    // print the tokens
     for (auto & tok : tokens) {
         printf("%d -> %s\n", tok, bert_vocab_id_to_token(bctx, tok));
     }
     printf("\n");
 
-    // run the embedding
+    // create a batch
     const int n_embd = bert_n_embd(bctx);
-    std::vector<float> embeddings(n_embd);
-    bert_forward(bctx, tokens, embeddings.data(), params.n_threads);
+    bert_batch batch = { tokens, tokens, tokens };
+
+    // run the embedding
+    std::vector<float> embed(batch.size()*n_embd);
+    bert_forward_batch(bctx, batch, embed.data(), params.n_threads);
 
     int64_t t_end_us = ggml_time_us();
     int64_t t_eval_us = t_end_us - t_mid_us;
     
     printf("[ ");
-    for(auto e : embeddings) {
-        printf("%1.4f, ", e);
+    for (int i = 0; i < 8; i++) {
+        printf("%1.4f, ", embed[i]);
     }
     printf("]\n");
 

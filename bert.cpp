@@ -1,23 +1,15 @@
 #include "bert.h"
 #include "ggml.h"
-#include "ggml/ggml-backend.h"
 
 #ifdef GGML_USE_CUBLAS
 #include "ggml-cuda.h"
 #endif
 
-#include <cassert>
 #include <cmath>
-#include <cstdio>
-#include <cstring>
 #include <fstream>
 #include <map>
 #include <string>
 #include <vector>
-#include <iostream>
-#include <regex>
-#include <thread>
-#include <algorithm>
 
 #define BERT_MAX_NODES 4096
 
@@ -151,19 +143,14 @@ struct bert_ctx {
     bert_model model;
     bert_vocab vocab;
 
-    size_t mem_per_token;
-    int64_t mem_per_input;
-    int32_t max_batch_n;
-
-    struct gguf_context * ctx_gguf;
     struct ggml_context * ctx_data;
 
     std::vector<uint8_t> buf_compute_meta;
 
     // memory buffers to evaluate the model
-    ggml_backend_buffer_t params_buffer = NULL;
-    ggml_backend_buffer_t compute_buffer = NULL;
     ggml_backend_t backend = NULL;
+    ggml_backend_buffer_t weights_buffer = NULL;
+    ggml_backend_buffer_t compute_buffer = NULL;
     ggml_allocr * compute_alloc = NULL;
 };
 
@@ -616,8 +603,8 @@ struct bert_ctx * bert_load_from_file(const char *fname, bool use_cpu) {
         }
 
         // create params buffer and allocr
-        new_bert->params_buffer = ggml_backend_alloc_buffer(new_bert->backend, buffer_size);
-        ggml_allocr * alloc = ggml_allocr_new_from_buffer(new_bert->params_buffer);
+        new_bert->weights_buffer = ggml_backend_alloc_buffer(new_bert->backend, buffer_size);
+        ggml_allocr * alloc = ggml_allocr_new_from_buffer(new_bert->weights_buffer);
 
         // loop over tensors and load in
         for (int i = 0; i < n_tensors; ++i) {
@@ -637,7 +624,7 @@ struct bert_ctx * bert_load_from_file(const char *fname, bool use_cpu) {
 
             // read in data and copy to device if needed
             int num_bytes = ggml_nbytes(cur);
-            if (ggml_backend_buffer_is_host(new_bert->params_buffer)) {
+            if (ggml_backend_buffer_is_host(new_bert->weights_buffer)) {
                 // for the CPU and Metal backend, we can read directly into the tensor
                 fin.read(reinterpret_cast<char *>(cur->data), num_bytes);
             } else {
@@ -852,24 +839,24 @@ ggml_cgraph * bert_build_graph(bert_ctx * ctx, bert_batch batch) {
         // self-attention
         {
             // extract Q
-            struct ggml_tensor * Qcur = cur;
-            Qcur = ggml_add(ctx0, ggml_mul_mat(ctx0, model.layers[il].q_w, Qcur), model.layers[il].q_b); // [E, L, B]
-            Qcur = ggml_reshape_4d(ctx0, Qcur, d_head, n_head, cur_max_len, n_batch_size); // [D, H, L, B]
-            struct ggml_tensor * Q = ggml_cont(ctx0, ggml_permute(ctx0, Qcur, 0, 2, 1, 3)); // [D, L, H, B]
+            struct ggml_tensor * Q = cur;
+            Q = ggml_add(ctx0, ggml_mul_mat(ctx0, model.layers[il].q_w, Q), model.layers[il].q_b); // [E, L, B]
+            Q = ggml_reshape_4d(ctx0, Q, d_head, n_head, cur_max_len, n_batch_size); // [D, H, L, B]
+            Q = ggml_cont(ctx0, ggml_permute(ctx0, Q, 0, 2, 1, 3)); // [D, L, H, B]
             Q = ggml_reshape_3d(ctx0, Q, d_head, cur_max_len, n_head * n_batch_size); // [D, L, H * B]
 
             // extract K
-            struct ggml_tensor * Kcur = cur;
-            Kcur = ggml_add(ctx0, ggml_mul_mat(ctx0, model.layers[il].k_w, Kcur), model.layers[il].k_b); // [E, L, B]
-            Kcur = ggml_reshape_4d(ctx0, Kcur, d_head, n_head, cur_max_len, n_batch_size); // [D, H, L, B]
-            struct ggml_tensor * K = ggml_cont(ctx0, ggml_permute(ctx0, Kcur, 0, 2, 1, 3)); // [D, L, H, B]
+            struct ggml_tensor * K = cur;
+            K = ggml_add(ctx0, ggml_mul_mat(ctx0, model.layers[il].k_w, K), model.layers[il].k_b); // [E, L, B]
+            K = ggml_reshape_4d(ctx0, K, d_head, n_head, cur_max_len, n_batch_size); // [D, H, L, B]
+            K = ggml_cont(ctx0, ggml_permute(ctx0, K, 0, 2, 1, 3)); // [D, L, H, B]
             K = ggml_reshape_3d(ctx0, K, d_head, cur_max_len, n_head * n_batch_size); // [D, L, H * B]
 
             // extract V
-            struct ggml_tensor * Vcur = cur;
-            Vcur = ggml_add(ctx0, ggml_mul_mat(ctx0, model.layers[il].v_w, Vcur), model.layers[il].v_b); // [E, L, B]
-            Vcur = ggml_reshape_4d(ctx0, Vcur, d_head, n_head, cur_max_len, n_batch_size); // [D, H, L, B]
-            struct ggml_tensor * V = ggml_cont(ctx0, ggml_permute(ctx0, Vcur, 0, 2, 1, 3)); // [D, L, H, B]
+            struct ggml_tensor * V = cur;
+            V = ggml_add(ctx0, ggml_mul_mat(ctx0, model.layers[il].v_w, V), model.layers[il].v_b); // [E, L, B]
+            V = ggml_reshape_4d(ctx0, V, d_head, n_head, cur_max_len, n_batch_size); // [D, H, L, B]
+            V = ggml_cont(ctx0, ggml_permute(ctx0, V, 0, 2, 1, 3)); // [D, L, H, B]
             V = ggml_reshape_3d(ctx0, V, d_head, cur_max_len, n_head * n_batch_size); // [D, L, H * B]
 
             // scaled attention
@@ -878,6 +865,7 @@ ggml_cgraph * bert_build_graph(bert_ctx * ctx, bert_batch batch) {
             KQ = ggml_add(ctx0, KQ, attn_mask);
             KQ = ggml_soft_max(ctx0, KQ);
 
+            // get weighted values
             V = ggml_cont(ctx0, ggml_transpose(ctx0, V)); // -> [L, D, H * B]
             struct ggml_tensor * KQV = ggml_mul_mat(ctx0, V, KQ); // -> [D, L, H * B]
             KQV = ggml_reshape_4d(ctx0, KQV, d_head, cur_max_len, n_head, n_batch_size); // -> [D, L, H, B]
@@ -922,7 +910,7 @@ ggml_cgraph * bert_build_graph(bert_ctx * ctx, bert_batch batch) {
 
     // l2 normalize
     inpL = ggml_rms_norm(ctx0, inpL, layer_norm_eps); // [E, B]
-    inpL = ggml_scale(ctx0, inpL, 1.0f / sqrt((float)n_embd)); // [E, B] (since rms_norm does average instead of sum)
+    inpL = ggml_scale(ctx0, inpL, 1.0f / sqrt((float)n_embd)); // [E, B] (since rms_norm does mean instead of sum)
 
     // final output
     ggml_tensor * output = inpL;
@@ -943,17 +931,6 @@ void bert_forward_batch(bert_ctx * ctx, bert_batch batch, float * embeddings, in
 
     // build the inference graph
     ggml_cgraph * gf = bert_build_graph(ctx, batch);
-
-    /*
-    // debug graph
-    for (int i = 0; i < gf->n_nodes; ++i) {
-        struct ggml_tensor * cur = gf->nodes[i];
-        int32_t src0 = cur->src[0] ? cur->src[0]->backend : -1;
-        int32_t src1 = cur->src[1] ? cur->src[1]->backend : -1;
-        printf("%s: node[%d]: backend = %d, type = %s, n_dims = %d, src0 = %d, src1 = %d, name = %s\n", __func__, i,
-               cur->backend, ggml_type_name(cur->type), ggml_n_dims(cur), src0, src1, cur->name);
-    }
-    */
 
     // execute graph
     ggml_allocr_alloc_graph(ctx->compute_alloc, gf);
