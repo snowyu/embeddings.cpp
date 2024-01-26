@@ -30,7 +30,7 @@ class BertModel:
         ]
 
         # load model from file and get embedding size
-        self.ctx = self.lib.bert_load_from_file(fname.encode('utf-8'), True)
+        self.ctx = self.lib.bert_load_from_file(fname.encode('utf-8'), False)
         self.n_embd = self.lib.bert_n_embd(self.ctx)
 
     def __del__(self):
