@@ -15,16 +15,6 @@
 extern "C" {
 #endif
 
-struct bert_params
-{
-    int32_t n_threads = 6;
-    const char* model = "models/all-MiniLM-L6-v2/ggml-model-q4_0.bin";
-    const char* prompt = "test prompt";
-    bool use_cpu = false;
-};
-
-BERT_API bool bert_params_parse(int argc, char **argv, bert_params &params);
-
 struct bert_ctx;
 
 typedef int32_t bert_token;
@@ -33,10 +23,17 @@ typedef std::vector<bert_tokens> bert_batch;
 typedef std::string bert_string;
 typedef std::vector<bert_string> bert_strings;
 
-BERT_API struct bert_ctx * bert_load_from_file(const char * fname, bool use_cpu);
-BERT_API void bert_free(bert_ctx * ctx);
-
 // Main api, does both tokenizing and evaluation
+
+BERT_API struct bert_ctx * bert_load_from_file(
+    const char * fname,
+    int32_t batch_size,
+    bool use_cpu
+);
+
+BERT_API void bert_free(
+    bert_ctx * ctx
+);
 
 BERT_API ggml_cgraph * bert_build_graph(
     bert_ctx * ctx,

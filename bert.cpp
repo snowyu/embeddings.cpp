@@ -176,51 +176,6 @@ const char* bert_vocab_id_to_token(bert_ctx * ctx, bert_token id) {
 }
 
 //
-// command line interface
-//
-
-void bert_print_usage(char **argv, const bert_params &params) {
-    fprintf(stderr, "usage: %s [options]\n", argv[0]);
-    fprintf(stderr, "\n");
-    fprintf(stderr, "options:\n");
-    fprintf(stderr, "  -h, --help            show this help message and exit\n");
-    fprintf(stderr, "  -s SEED, --seed SEED  RNG seed (default: -1)\n");
-    fprintf(stderr, "  -t N, --threads N     number of threads to use during computation (default: %d)\n", params.n_threads);
-    fprintf(stderr, "  -p PROMPT, --prompt PROMPT\n");
-    fprintf(stderr, "                        prompt to start generation with (default: random)\n");
-    fprintf(stderr, "  -m FNAME, --model FNAME\n");
-    fprintf(stderr, "                        model path (default: %s)\n", params.model);
-    fprintf(stderr, "  -c, --cpu             use CPU backend (default: use CUDA if available)\n");
-    fprintf(stderr, "\n");
-}
-
-bool bert_params_parse(int argc, char **argv, bert_params &params) {
-    for (int i = 1; i < argc; i++)
-    {
-        std::string arg = argv[i];
-
-        if (arg == "-t" || arg == "--threads") {
-            params.n_threads = std::stoi(argv[++i]);
-        } else if (arg == "-p" || arg == "--prompt") {
-            params.prompt = argv[++i];
-        } else if (arg == "-m" || arg == "--model") {
-            params.model = argv[++i];
-        } else if (arg == "-c" || arg == "--cpu") {
-            params.use_cpu = true;
-        } else if (arg == "-h" || arg == "--help") {
-            bert_print_usage(argv, params);
-            exit(0);
-        } else {
-            fprintf(stderr, "error: unknown argument: %s\n", arg.c_str());
-            bert_print_usage(argv, params);
-            exit(0);
-        }
-    }
-
-    return true;
-}
-
-//
 // tokenizing
 //
 
@@ -430,7 +385,7 @@ bert_tokens bert_tokenize(struct bert_ctx * ctx, bert_string text, int32_t n_max
 // loading and setup
 //
 
-struct bert_ctx * bert_load_from_file(const char *fname, bool use_cpu) {
+struct bert_ctx * bert_load_from_file(const char *fname, int32_t batch_size, bool use_cpu) {
     printf("%s: loading model from '%s (use_cpu = %b)' - please wait ...\n", __func__, fname, use_cpu);
 
     struct ggml_context * ctx_ggml = NULL;
@@ -694,7 +649,9 @@ struct bert_ctx * bert_load_from_file(const char *fname, bool use_cpu) {
         // construct batch and compute graph
         bert_tokens tokens(hparams.n_max_tokens);
         bert_batch batch;
-        batch.push_back(tokens);
+        for (int i = 0; i < batch_size; ++i) {
+            batch.push_back(tokens);
+        }
         ggml_cgraph * gf = bert_build_graph(new_bert, batch);
 
         // do computing graph measurement
