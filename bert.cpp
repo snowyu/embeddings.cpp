@@ -309,13 +309,13 @@ bert_tokens bert_tokenize(struct bert_ctx * ctx, bert_string text, int32_t n_max
         }
     }
 
+    // split by whitespace
     int l = 0;
     int r = 0;
     while (r < new_str.size()) {
         // if is whitespace
         if (isspace(new_str[r])) {
-            if (r > l)
-                words.push_back(new_str.substr(l, (r - l)));
+            if (r > l) words.push_back(new_str.substr(l, (r - l)));
             l = r + 1;
             r = l;
         }
@@ -327,58 +327,69 @@ bert_tokens bert_tokenize(struct bert_ctx * ctx, bert_string text, int32_t n_max
         words.push_back(new_str.substr(l, (r - l)));
     }
 
-    int32_t t = 0;
-    int32_t prev_t = 0;
-
+    // start with a cls token
     bert_tokens tokens;
     tokens.push_back(cls_tok_id);
-    t++;
 
     // find the longest tokens that form the words:
     for (const auto &word : words) {
+        // skip empty words
         int n = word.size();
-        if (n == 0) {
-            continue;
-        }
-        prev_t = t;
+        if (n == 0) continue;
 
+        // we're at the start of a new word
         int i = 0;
+        bool match = false;
         auto * token_map = &vocab.token_to_id;
+
     loop:
+        // check for max tokens
+        if (tokens.size() >= n_max_tokens - 1) {
+            break;
+        }
+
+        // move through character position in word
         while (i < n) {
-            if (t >= n_max_tokens - 1) {
-                break;
-            }
-            int j = n;
-            while (j > i) {
+            // loop through possible match length
+            for (int j = n; j > i; j--) {
                 auto it = token_map->find(word.substr(i, j - i));
                 if (it != token_map->end()) {
                     tokens.push_back(it->second);
-                    t++;
+                    match = true;
                     i = j;
                     token_map = &vocab.subword_token_to_id;
                     goto loop;
                 }
-                --j;
+                j--;
             }
-            if (j == i) {
-                fprintf(stderr, "%s: unknown token '%s'\n", __func__, word.substr(i, 1).data());
-                token_map = &vocab.subword_token_to_id;
-                ++i;
-            }
-        }
-        if (prev_t == t) {
-            // fprintf(stderr, "%s: unknown token '%s'\n", __func__, word.data());
-            tokens.push_back(unk_tok_id);
-            t++;
+
+            // we didn't find a match at this length
+            // fprintf(stderr, "%s: unknown token '%s'\n", __func__, word.substr(i, 1).data());
+            token_map = &vocab.subword_token_to_id;
+            i++;
         }
 
+        // we didn't find any matches for this word
+        if (!match) {
+            // fprintf(stderr, "%s: unknown token '%s'\n", __func__, word.data());
+            tokens.push_back(unk_tok_id);
+        }
     }
+
+    // append terminate token
     tokens.push_back(sep_tok_id);
-    t++;
 
     // return tokens
     return tokens;
+}
+
+// c-string interface to tokenizer
+void bert_tokenize_c(struct bert_ctx * ctx, const char * text, int32_t * output, int32_t n_max_tokens) {
+    bert_string str(text);
+    bert_tokens tokens = bert_tokenize(ctx, str, n_max_tokens);
+    for (int i = 0; i < tokens.size(); ++i) {
+        output[i] = tokens[i];
+    }
 }
 
 //
@@ -681,6 +692,14 @@ ggml_cgraph * bert_build_graph(bert_ctx * ctx, bert_batch batch) {
     const bert_model & model = ctx->model;
     const bert_hparams & hparams = model.hparams;
 
+    // extract model params
+    const int n_embd = hparams.n_embd;
+    const int n_layer = hparams.n_layer;
+    const int n_max_tokens = hparams.n_max_tokens;
+    const int n_head = hparams.n_head;
+    const float layer_norm_eps = hparams.layer_norm_eps;
+    const int d_head = n_embd / n_head; // E = D * H
+
     // get the max length of the batch
     int n_batch_size = batch.size();
     int cur_max_len = 0;
@@ -690,17 +709,9 @@ ggml_cgraph * bert_build_graph(bert_ctx * ctx, bert_batch batch) {
             cur_max_len = n;
     }
 
-    // extract model params
-    const int n_embd = hparams.n_embd;
-    const int n_layer = hparams.n_layer;
-    const int n_max_tokens = hparams.n_max_tokens;
-    const int n_head = hparams.n_head;
-    const float layer_norm_eps = hparams.layer_norm_eps;
-    const int d_head = n_embd / n_head; // E = D * H
-
     // check for token overflow
     if (cur_max_len > n_max_tokens) {
-        fprintf(stderr, "Too many tokens, maximum is %d\n", n_max_tokens);
+        fprintf(stderr, "Too many tokens, maximum is %d, got %d\n", n_max_tokens, cur_max_len);
         return nullptr;
     }
 
@@ -773,7 +784,7 @@ ggml_cgraph * bert_build_graph(bert_ctx * ctx, bert_batch batch) {
     // outer product the padding mask to kill off outside
     struct ggml_tensor * attn_mask = ggml_mul_mat(ctx0, pad_mask, pad_mask); // [L, L, 1, B]
     attn_mask = ggml_add(ctx0, attn_mask, minus_one); // result -0
-    attn_mask = ggml_scale(ctx0, attn_mask, 100000.0f); // BUG: 1e3 will cause overflow?
+    attn_mask = ggml_scale_inplace(ctx0, attn_mask, 100000.0f); // BUG: 1e3 will cause overflow?
 
     // broadcast LxL attention to each head and batch element
     attn_mask = ggml_repeat(ctx0, attn_mask, ggml_new_tensor_4d(ctx0, GGML_TYPE_I32, cur_max_len, cur_max_len, n_head, n_batch_size)); // [L, L, H, B]
@@ -818,7 +829,7 @@ ggml_cgraph * bert_build_graph(bert_ctx * ctx, bert_batch batch) {
 
             // scaled attention
             struct ggml_tensor * KQ = ggml_mul_mat(ctx0, K, Q); // -> [L, L, H * B]
-            KQ = ggml_scale(ctx0, KQ, 1.0f / sqrt((float)d_head));
+            KQ = ggml_scale_inplace(ctx0, KQ, 1.0f / sqrt((float)d_head));
             KQ = ggml_add(ctx0, KQ, attn_mask);
             KQ = ggml_soft_max(ctx0, KQ);
 
@@ -867,7 +878,7 @@ ggml_cgraph * bert_build_graph(bert_ctx * ctx, bert_batch batch) {
 
     // l2 normalize
     inpL = ggml_rms_norm(ctx0, inpL, layer_norm_eps); // [E, B]
-    inpL = ggml_scale(ctx0, inpL, 1.0f / sqrt((float)n_embd)); // [E, B] (since rms_norm does mean instead of sum)
+    inpL = ggml_scale_inplace(ctx0, inpL, 1.0f / sqrt((float)n_embd)); // [E, B] (since rms_norm does mean instead of sum)
 
     // final output
     ggml_tensor * output = inpL;
@@ -886,10 +897,14 @@ void bert_forward_batch(bert_ctx * ctx, bert_batch batch, float * embeddings, in
     // reset alloc buffer to clean the memory from previous invocations
     ggml_allocr_reset(ctx->compute_alloc);
 
-    // build the inference graph
+    // build the compute graph
     ggml_cgraph * gf = bert_build_graph(ctx, batch);
+    if (gf == nullptr) {
+        fprintf(stderr, "%s: failed to build compute graph\n", __func__);
+        return;
+    }
 
-    // execute graph
+    // allocate memory for the graph
     ggml_allocr_alloc_graph(ctx->compute_alloc, gf);
 
     // print timing information per ggml operation (for debugging purposes)
@@ -907,6 +922,7 @@ void bert_forward_batch(bert_ctx * ctx, bert_batch batch, float * embeddings, in
     }
 #endif
 
+    // execute the graph
     ggml_backend_graph_compute(ctx->backend, gf);
 
     // the last node is the embedding tensor
@@ -920,13 +936,22 @@ void bert_encode_batch(struct bert_ctx * ctx, bert_strings texts, float * embedd
     int32_t N = bert_n_max_tokens(ctx);
     int32_t n_input = texts.size();
 
+    int64_t t_beg_us = ggml_time_us();
+
     bert_batch batch;
     for (int i = 0; i < n_input; i++) {
         bert_tokens tokens = bert_tokenize(ctx, texts[i], N);
         batch.push_back(tokens);
     }
 
+    int64_t t_mid_us = ggml_time_us();
+
     bert_forward_batch(ctx, batch, embeddings, n_threads);
+
+    int64_t t_end_us = ggml_time_us();
+
+    // printf("tokenization: %.3f ms\n", (t_mid_us - t_beg_us) / 1000.0);
+    // printf("inference: %.3f ms\n", (t_end_us - t_mid_us) / 1000.0);
 }
 
 void bert_encode_batch_c(struct bert_ctx * ctx, const char ** texts, float * embeddings, int32_t n_input, int32_t n_threads) {

@@ -1,6 +1,7 @@
 import os
 import ctypes
 import numpy as np
+from tqdm import tqdm
 
 LIB_DIR = os.path.dirname(__file__)
 LIB_PATH = os.path.join(LIB_DIR, 'build/libbert.so')
@@ -25,8 +26,18 @@ class BertModel:
 
         self.lib.bert_n_embd.restype = ctypes.c_int32
         self.lib.bert_n_embd.argtypes = [ctypes.c_void_p]
-        
+
+        self.lib.bert_n_max_tokens.restype = ctypes.c_int32
+        self.lib.bert_n_max_tokens.argtypes = [ctypes.c_void_p]
+
         self.lib.bert_free.argtypes = [ctypes.c_void_p]
+
+        self.lib.bert_tokenize_c.argtypes = [
+            ctypes.c_void_p,                 # struct bert_ctx * ctx
+            ctypes.c_char_p, # const char * text
+            ctypes.POINTER(ctypes.c_int32),  # int32_t * output
+            ctypes.c_int32,                  # int32_t n_max_tokens
+        ]
 
         self.lib.bert_encode_batch_c.argtypes = [
             ctypes.c_void_p,                 # struct bert_ctx * ctx
@@ -43,6 +54,13 @@ class BertModel:
 
     def __del__(self):
         self.lib.bert_free(self.ctx)
+
+    def tokenize(self, text):
+        n_max_tokens = self.lib.bert_n_max_tokens(self.ctx)
+        tokens = np.zeros(2*n_max_tokens, dtype=np.int32)
+        tokens_p = tokens.ctypes.data_as(ctypes.POINTER(ctypes.c_int32))
+        self.lib.bert_tokenize_c(self.ctx, text.encode('utf-8'), tokens_p, n_max_tokens)
+        return tokens
 
     def encode_batch(self, batch, embed_p=None, n_threads=8):
         # create embedding memory
@@ -79,7 +97,8 @@ class BertModel:
         embed_p = embed.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
 
         # loop over batches
-        for i in range(0, n_input, self.batch_size):
+        indices = list(range(0, n_input, self.batch_size))
+        for i in tqdm(indices):
             j = min(i + self.batch_size, n_input)
             batch = text[i:j]
             batch_p = increment_pointer(embed_p, i * self.n_embd)

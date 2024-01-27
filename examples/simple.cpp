@@ -99,7 +99,10 @@ int main(int argc, char ** argv) {
 
     // create a batch
     const int n_embd = bert_n_embd(bctx);
-    bert_batch batch = { tokens, tokens, tokens };
+    bert_batch batch;
+    for (int i = 0; i < 32; i++) {
+        batch.push_back(tokens);
+    }
 
     // run the embedding
     std::vector<float> embed(batch.size()*n_embd);
