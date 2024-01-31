@@ -5,6 +5,58 @@
 #include <stdio.h>
 #include <vector>
 
+struct bert_params
+{
+    int32_t n_threads = 6;
+    const char* model = "models/all-MiniLM-L6-v2/ggml-model-q4_0.bin";
+    const char* prompt = "test prompt";
+    int32_t batch_size = 32;
+    bool use_cpu = false;
+};
+
+void bert_print_usage(char **argv, const bert_params &params) {
+    fprintf(stderr, "usage: %s [options]\n", argv[0]);
+    fprintf(stderr, "\n");
+    fprintf(stderr, "options:\n");
+    fprintf(stderr, "  -h, --help            show this help message and exit\n");
+    fprintf(stderr, "  -s SEED, --seed SEED  RNG seed (default: -1)\n");
+    fprintf(stderr, "  -t N, --threads N     number of threads to use during computation (default: %d)\n", params.n_threads);
+    fprintf(stderr, "  -p PROMPT, --prompt PROMPT\n");
+    fprintf(stderr, "                        prompt to start generation with (default: random)\n");
+    fprintf(stderr, "  -m FNAME, --model FNAME\n");
+    fprintf(stderr, "                        model path (default: %s)\n", params.model);
+    fprintf(stderr, "  -b BATCH_SIZE, --batch-size BATCH_SIZE\n");
+    fprintf(stderr, "                        batch size to use when executing model\n");
+    fprintf(stderr, "  -c, --cpu             use CPU backend (default: use CUDA if available)\n");
+    fprintf(stderr, "\n");
+}
+
+bool bert_params_parse(int argc, char **argv, bert_params &params) {
+    for (int i = 1; i < argc; i++)
+    {
+        std::string arg = argv[i];
+
+        if (arg == "-t" || arg == "--threads") {
+            params.n_threads = std::stoi(argv[++i]);
+        } else if (arg == "-p" || arg == "--prompt") {
+            params.prompt = argv[++i];
+        } else if (arg == "-m" || arg == "--model") {
+            params.model = argv[++i];
+        } else if (arg == "-c" || arg == "--cpu") {
+            params.use_cpu = true;
+        } else if (arg == "-h" || arg == "--help") {
+            bert_print_usage(argv, params);
+            exit(0);
+        } else {
+            fprintf(stderr, "error: unknown argument: %s\n", arg.c_str());
+            bert_print_usage(argv, params);
+            exit(0);
+        }
+    }
+
+    return true;
+}
+
 int main(int argc, char ** argv) {
     ggml_time_init();
     const int64_t t_main_start_us = ggml_time_us();
@@ -22,10 +74,14 @@ int main(int argc, char ** argv) {
     {
         const int64_t t_start_us = ggml_time_us();
 
-        if ((bctx = bert_load_from_file(params.model)) == nullptr) {
+        bctx = bert_load_from_file(params.model, params.use_cpu);
+        if (bctx == nullptr) {
             fprintf(stderr, "%s: failed to load model from '%s'\n", __func__, params.model);
             return 1;
         }
+
+        const int32_t n_max_tokens = bert_n_max_tokens(bctx);
+        bert_allocate_buffers(bctx, n_max_tokens, params.batch_size);
 
         t_load_us = ggml_time_us() - t_start_us;
     }
@@ -34,33 +90,34 @@ int main(int argc, char ** argv) {
 
     // tokenize the prompt
     int N = bert_n_max_tokens(bctx);
-    std::vector<bert_vocab_id> tokens(N);
-    int n_tokens;
-    bert_tokenize(bctx, params.prompt, tokens.data(), &n_tokens, N);
-    tokens.resize(n_tokens);
+    bert_tokens tokens = bert_tokenize(bctx, params.prompt, N);
 
     int64_t t_mid_us = ggml_time_us();
     int64_t t_token_us = t_mid_us - t_start_us;
 
-    printf("%s: number of tokens in prompt = %zu\n", __func__, tokens.size());
-    printf("\n");
-
-    for (auto& tok : tokens) {
+    // print the tokens
+    for (auto & tok : tokens) {
         printf("%d -> %s\n", tok, bert_vocab_id_to_token(bctx, tok));
     }
     printf("\n");
 
-    // run the embedding
+    // create a batch
     const int n_embd = bert_n_embd(bctx);
-    std::vector<float> embeddings(n_embd);
-    bert_forward(bctx, params.n_threads, tokens.data(), n_tokens, embeddings.data());
+    bert_batch batch;
+    for (int i = 0; i < 32; i++) {
+        batch.push_back(tokens);
+    }
+
+    // run the embedding
+    std::vector<float> embed(batch.size()*n_embd);
+    bert_forward_batch(bctx, batch, embed.data(), params.n_threads);
 
     int64_t t_end_us = ggml_time_us();
     int64_t t_eval_us = t_end_us - t_mid_us;
     
-    printf("[");
-    for(auto e : embeddings) {
-        printf("%1.4f, ", e);
+    printf("[ ");
+    for (int i = 0; i < 8; i++) {
+        printf("%1.4f, ", embed[i]);
     }
     printf("]\n");
 
