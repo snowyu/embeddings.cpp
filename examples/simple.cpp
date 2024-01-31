@@ -74,10 +74,14 @@ int main(int argc, char ** argv) {
     {
         const int64_t t_start_us = ggml_time_us();
 
-        if ((bctx = bert_load_from_file(params.model, params.batch_size, params.use_cpu)) == nullptr) {
+        bctx = bert_load_from_file(params.model, params.use_cpu);
+        if (bctx == nullptr) {
             fprintf(stderr, "%s: failed to load model from '%s'\n", __func__, params.model);
             return 1;
         }
+
+        const int32_t n_max_tokens = bert_n_max_tokens(bctx);
+        bert_allocate_buffers(bctx, n_max_tokens, params.batch_size);
 
         t_load_us = ggml_time_us() - t_start_us;
     }

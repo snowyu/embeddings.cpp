@@ -20,8 +20,14 @@ class BertModel:
         self.lib.bert_load_from_file.restype = ctypes.c_void_p
         self.lib.bert_load_from_file.argtypes = [
             ctypes.c_char_p, # const char * fname
-            ctypes.c_int32,  # int batch_size
             ctypes.c_bool,   # bool use_cpu
+        ]
+
+        self.lib.bert_allocate_buffers.restype = ctypes.c_void_p
+        self.lib.bert_allocate_buffers.argtypes = [
+            ctypes.c_void_p, # bert_ctx * ctx
+            ctypes.c_int32,  # int32_t n_max_tokens
+            ctypes.c_int32,  # int32_t batch_size
         ]
 
         self.lib.bert_n_embd.restype = ctypes.c_int32
@@ -34,7 +40,7 @@ class BertModel:
 
         self.lib.bert_tokenize_c.argtypes = [
             ctypes.c_void_p,                 # struct bert_ctx * ctx
-            ctypes.c_char_p, # const char * text
+            ctypes.c_char_p,                 # const char * text
             ctypes.POINTER(ctypes.c_int32),  # int32_t * output
             ctypes.c_int32,                  # int32_t n_max_tokens
         ]
@@ -47,10 +53,16 @@ class BertModel:
             ctypes.c_int32,                  # int32_t n_threads
         ]
 
-        # load model from file and get embedding size
-        self.ctx = self.lib.bert_load_from_file(fname.encode('utf-8'), batch_size, use_cpu)
+        # load model from file
+        self.ctx = self.lib.bert_load_from_file(fname.encode('utf-8'), use_cpu)
+
+        # get model dimensions
         self.n_embd = self.lib.bert_n_embd(self.ctx)
+        self.n_max_tokens = self.lib.bert_n_max_tokens(self.ctx)
         self.batch_size = batch_size
+
+        # allocate compute buffers
+        self.lib.bert_allocate_buffers(self.ctx, self.n_max_tokens, self.batch_size)
 
     def __del__(self):
         self.lib.bert_free(self.ctx)

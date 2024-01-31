@@ -77,105 +77,6 @@ static void tensor_stats(ggml_tensor * t) {
 }
 
 //
-// data structures
-//
-
-// default hparams (all-MiniLM-L6-v2)
-struct bert_hparams {
-    int32_t n_vocab = 30522;
-    int32_t n_max_tokens = 512;
-    int32_t n_embd = 256;
-    int32_t n_intermediate = 1536;
-    int32_t n_head = 12;
-    int32_t n_layer = 6;
-    float_t layer_norm_eps = 1e-12;
-};
-
-struct bert_layer {
-    // normalization
-    struct ggml_tensor *ln_att_w;
-    struct ggml_tensor *ln_att_b;
-
-    struct ggml_tensor *ln_out_w;
-    struct ggml_tensor *ln_out_b;
-
-    // attention
-    struct ggml_tensor *q_w;
-    struct ggml_tensor *q_b;
-    struct ggml_tensor *k_w;
-    struct ggml_tensor *k_b;
-    struct ggml_tensor *v_w;
-    struct ggml_tensor *v_b;
-
-    struct ggml_tensor *o_w;
-    struct ggml_tensor *o_b;
-
-    // ff
-    struct ggml_tensor *ff_i_w;
-    struct ggml_tensor *ff_i_b;
-
-    struct ggml_tensor *ff_o_w;
-    struct ggml_tensor *ff_o_b;
-};
-
-struct bert_vocab {
-    std::map<std::string, bert_token> token_to_id;
-    std::map<std::string, bert_token> subword_token_to_id;
-
-    std::map<bert_token, std::string> _id_to_token;
-    std::map<bert_token, std::string> _id_to_subword_token;
-};
-
-struct bert_model {
-    bert_hparams hparams;
-
-    // embeddings weights
-    struct ggml_tensor *word_embeddings;
-    struct ggml_tensor *token_type_embeddings;
-    struct ggml_tensor *position_embeddings;
-    struct ggml_tensor *ln_e_w;
-    struct ggml_tensor *ln_e_b;
-
-    std::vector<bert_layer> layers;
-};
-
-struct bert_ctx {
-    bert_model model;
-    bert_vocab vocab;
-
-    struct ggml_context * ctx_data;
-
-    std::vector<uint8_t> buf_compute_meta;
-
-    // memory buffers to evaluate the model
-    ggml_backend_t backend = NULL;
-    ggml_backend_buffer_t weights_buffer = NULL;
-    ggml_backend_buffer_t compute_buffer = NULL;
-    ggml_allocr * compute_alloc = NULL;
-};
-
-int32_t bert_n_embd(bert_ctx * ctx) {
-    return ctx->model.hparams.n_embd;
-}
-
-int32_t bert_n_max_tokens(bert_ctx * ctx) {
-    return ctx->model.hparams.n_max_tokens;
-}
-
-const char* bert_vocab_id_to_token(bert_ctx * ctx, bert_token id) {
-    bert_vocab & vocab = ctx->vocab;
-    auto it = vocab._id_to_token.find(id);
-    if (it != vocab._id_to_token.end()) {
-        return it->second.c_str();
-    }
-    it = vocab._id_to_subword_token.find(id);
-    if (it != vocab._id_to_subword_token.end()) {
-        return it->second.c_str();
-    }
-    return "[UNK TOKEN from bert_vocab]";
-}
-
-//
 // tokenizing
 //
 
@@ -273,6 +174,19 @@ bool is_chinese_char(const std::string& str) {
         return true;
     }
     return false;
+}
+
+const char* bert_vocab_id_to_token(bert_ctx * ctx, bert_token id) {
+    bert_vocab & vocab = ctx->vocab;
+    auto it = vocab._id_to_token.find(id);
+    if (it != vocab._id_to_token.end()) {
+        return it->second.c_str();
+    }
+    it = vocab._id_to_subword_token.find(id);
+    if (it != vocab._id_to_subword_token.end()) {
+        return it->second.c_str();
+    }
+    return "[UNK TOKEN from bert_vocab]";
 }
 
 bert_tokens bert_tokenize(struct bert_ctx * ctx, bert_string text, int32_t n_max_tokens) {
@@ -393,10 +307,22 @@ void bert_tokenize_c(struct bert_ctx * ctx, const char * text, int32_t * output,
 }
 
 //
+// bert model
+//
+
+int32_t bert_n_embd(bert_ctx * ctx) {
+    return ctx->model.hparams.n_embd;
+}
+
+int32_t bert_n_max_tokens(bert_ctx * ctx) {
+    return ctx->model.hparams.n_max_tokens;
+}
+
+//
 // loading and setup
 //
 
-struct bert_ctx * bert_load_from_file(const char *fname, int32_t batch_size, bool use_cpu) {
+struct bert_ctx * bert_load_from_file(const char *fname, bool use_cpu) {
     printf("%s: loading model from '%s (use_cpu = %b)' - please wait ...\n", __func__, fname, use_cpu);
 
     struct ggml_context * ctx_ggml = NULL;
@@ -476,6 +402,7 @@ struct bert_ctx * bert_load_from_file(const char *fname, int32_t batch_size, boo
 
         for (int i = 0; i < n_vocab; i++) {
             std::string word = gguf_get_arr_str(ctx_gguf, token_idx, i);
+            vocab.tokens.push_back(word);
 
             if (word[0] == '#' && word[1] == '#') {
                 vocab.subword_token_to_id[word.substr(2)] = i;
@@ -651,36 +578,71 @@ struct bert_ctx * bert_load_from_file(const char *fname, int32_t batch_size, boo
     ggml_free(ctx_ggml);
     gguf_free(ctx_gguf);
 
-    // measure mem requirement and allocate
-    {
-        // get measuring allocr for backend
-        new_bert->buf_compute_meta.resize(GGML_DEFAULT_GRAPH_SIZE * ggml_tensor_overhead() + ggml_graph_overhead());
-        new_bert->compute_alloc = ggml_allocr_new_measure_from_backend(new_bert->backend);
-
-        // construct batch and compute graph
-        bert_tokens tokens(hparams.n_max_tokens);
-        bert_batch batch;
-        for (int i = 0; i < batch_size; ++i) {
-            batch.push_back(tokens);
-        }
-        ggml_cgraph * gf = bert_build_graph(new_bert, batch);
-
-        // do computing graph measurement
-        size_t compute_memory_buffer_size = ggml_allocr_alloc_graph(new_bert->compute_alloc, gf);
-        ggml_allocr_free(new_bert->compute_alloc);
-
-        // now that we know the compute size, create a buffer and allocr
-        new_bert->compute_buffer = ggml_backend_alloc_buffer(new_bert->backend, compute_memory_buffer_size);
-        new_bert->compute_alloc = ggml_allocr_new_from_buffer(new_bert->compute_buffer);
-
-        printf("%s: compute allocated memory: %.2f MB\n\n", __func__, compute_memory_buffer_size / 1024.0 / 1024.0);
-    }
-
+    // return context
     return new_bert;
 }
 
+// measure and allocate comptue buffers
+void bert_allocate_buffers(bert_ctx * ctx, int32_t n_max_tokens, int32_t batch_size) {
+    // deallocate if already allocated
+    bert_deallocate_buffers(ctx);
+
+    // get measuring allocr for backend
+    ctx->buf_compute_meta.resize(GGML_DEFAULT_GRAPH_SIZE * ggml_tensor_overhead() + ggml_graph_overhead());
+    ctx->compute_alloc = ggml_allocr_new_measure_from_backend(ctx->backend);
+
+    // construct batch and compute graph
+    bert_tokens tokens(n_max_tokens);
+    bert_batch batch;
+    for (int i = 0; i < batch_size; ++i) {
+        batch.push_back(tokens);
+    }
+    ggml_cgraph * gf = bert_build_graph(ctx, batch);
+
+    // do computing graph measurement
+    size_t compute_memory_buffer_size = ggml_allocr_alloc_graph(ctx->compute_alloc, gf);
+    ggml_allocr_free(ctx->compute_alloc);
+
+    // now that we know the compute size, create a buffer and allocr
+    ctx->compute_buffer = ggml_backend_alloc_buffer(ctx->backend, compute_memory_buffer_size);
+    ctx->compute_alloc = ggml_allocr_new_from_buffer(ctx->compute_buffer);
+
+    printf("%s: compute allocated memory: %.2f MB\n\n", __func__, compute_memory_buffer_size / 1024.0 / 1024.0);
+}
+
+void bert_deallocate_buffers(bert_ctx * ctx) {
+    if (ctx->compute_buffer) {
+        ggml_backend_buffer_free(ctx->compute_buffer);
+        ctx->compute_buffer = NULL;
+    }
+    if (ctx->compute_alloc) {
+        ggml_allocr_free(ctx->compute_alloc);
+        ctx->compute_alloc = NULL;
+    }
+}
+
 void bert_free(bert_ctx * ctx) {
-    ggml_free(ctx->ctx_data);
+    // free compute buffers
+    bert_deallocate_buffers(ctx);
+
+    // free weights buffer
+    if (ctx->weights_buffer) {
+        ggml_backend_buffer_free(ctx->weights_buffer);
+        ctx->weights_buffer = NULL;
+    }
+
+    // free tensor context
+    if (ctx->ctx_data) {
+        ggml_free(ctx->ctx_data);
+        ctx->ctx_data = NULL;
+    }
+
+    // free backend
+    if (ctx->backend) {
+        ggml_backend_free(ctx->backend);
+        ctx->backend = NULL;
+    }
+
     delete ctx;
 }
 

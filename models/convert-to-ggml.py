@@ -20,7 +20,7 @@ ftype = int(sys.argv[2]) if len(sys.argv) > 2 else 0
 
 # map from ftype to string
 ftype_str = 'f32' if ftype == 1 else 'f16'
-fname_out = dir_model / f'ggml-model-{ftype_str}.bin'
+fname_out = dir_model / f'ggml-model-{ftype_str}.gguf'
 
 # heck if the directory existsc
 if not dir_model.exists():
