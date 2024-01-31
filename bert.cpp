@@ -20,7 +20,7 @@
 #define KEY_DESCRIPTION "general.description"
 #define KEY_TOKEN_LIST "tokenizer.ggml.tokens"
 
-const int verbosity = 2;
+const int verbosity = 0;
 
 //
 // utilities to get data from a gguf file
@@ -29,8 +29,8 @@ const int verbosity = 2;
 static int get_key_idx(const gguf_context * ctx, const char * key) {
     int i = gguf_find_key(ctx, key);
     if (i == -1) {
-        fprintf(stderr, "key %s not found in file\n", key);
-        throw printf("Missing required key: %s", key);
+        fprintf(stderr, "%s: key %s not found in file\n", __func__, key);
+        throw;
     }
 
     return i;
@@ -57,7 +57,8 @@ static std::string get_str(const gguf_context * ctx, const std::string & key) {
 static struct ggml_tensor * get_tensor(struct ggml_context * ctx, const std::string & name) {
     struct ggml_tensor * cur = ggml_get_tensor(ctx, name.c_str());
     if (!cur) {
-        throw printf("%s: unable to find tensor %s\n", __func__, name.c_str());
+        fprintf(stderr, "%s: unable to find tensor %s\n", __func__, name.c_str());
+        throw;
     }
 
     return cur;
@@ -298,12 +299,13 @@ bert_tokens bert_tokenize(struct bert_ctx * ctx, bert_string text, int32_t n_max
 }
 
 // c-string interface to tokenizer
-void bert_tokenize_c(struct bert_ctx * ctx, const char * text, int32_t * output, int32_t n_max_tokens) {
+int32_t bert_tokenize_c(struct bert_ctx * ctx, const char * text, int32_t * output, int32_t n_max_tokens) {
     bert_string str(text);
     bert_tokens tokens = bert_tokenize(ctx, str, n_max_tokens);
     for (int i = 0; i < tokens.size(); ++i) {
         output[i] = tokens[i];
     }
+    return tokens.size();
 }
 
 //
@@ -323,8 +325,6 @@ int32_t bert_n_max_tokens(bert_ctx * ctx) {
 //
 
 struct bert_ctx * bert_load_from_file(const char *fname, bool use_cpu) {
-    printf("%s: loading model from '%s (use_cpu = %b)' - please wait ...\n", __func__, fname, use_cpu);
-
     struct ggml_context * ctx_ggml = NULL;
 
     struct gguf_init_params params = {
@@ -335,7 +335,8 @@ struct bert_ctx * bert_load_from_file(const char *fname, bool use_cpu) {
     // open gguf file
     struct gguf_context * ctx_gguf = gguf_init_from_file(fname, params);
     if (!ctx_gguf) {
-        throw printf("%s: failed to load BERT model from %s. Does this file exist?\n", __func__, fname);
+        fprintf(stderr, "%s: failed to load BERT model from %s. Does this file exist?\n", __func__, fname);
+        return nullptr;
     }
 
     // get generic model info
@@ -359,16 +360,6 @@ struct bert_ctx * bert_load_from_file(const char *fname, bool use_cpu) {
     }
     const int n_tensors = gguf_get_n_tensors(ctx_gguf);
 
-    // get key-value pairs
-    if (verbosity >= 3) {
-        const int n_kv = gguf_get_n_kv(ctx_gguf);
-        for (int i = 0; i < n_kv; ++i) {
-            const char * key = gguf_get_key(ctx_gguf, i);
-            printf("%s: kv[%d]: key = %s\n", __func__, i, key);
-        }
-        printf("\n");
-    }
-
     // create model object
     bert_ctx * new_bert = new bert_ctx;
     bert_model & model = new_bert->model;
@@ -385,14 +376,16 @@ struct bert_ctx * bert_load_from_file(const char *fname, bool use_cpu) {
         hparams.n_layer = get_u32(ctx_gguf, "num_hidden_layers");
         hparams.layer_norm_eps = get_f32(ctx_gguf, "layer_norm_eps");
 
-        printf("%s: n_vocab        = %d\n", __func__, hparams.n_vocab);
-        printf("%s: n_max_tokens   = %d\n", __func__, hparams.n_max_tokens);
-        printf("%s: n_embd         = %d\n", __func__, hparams.n_embd);
-        printf("%s: n_intermediate = %d\n", __func__, hparams.n_intermediate);
-        printf("%s: n_head         = %d\n", __func__, hparams.n_head);
-        printf("%s: n_layer        = %d\n", __func__, hparams.n_layer);
-        printf("%s: layer_norm_eps = %g\n", __func__, hparams.layer_norm_eps);
-        printf("\n");
+        if (verbosity >= 1) {
+            printf("%s: n_vocab        = %d\n", __func__, hparams.n_vocab);
+            printf("%s: n_max_tokens   = %d\n", __func__, hparams.n_max_tokens);
+            printf("%s: n_embd         = %d\n", __func__, hparams.n_embd);
+            printf("%s: n_intermediate = %d\n", __func__, hparams.n_intermediate);
+            printf("%s: n_head         = %d\n", __func__, hparams.n_head);
+            printf("%s: n_layer        = %d\n", __func__, hparams.n_layer);
+            printf("%s: layer_norm_eps = %g\n", __func__, hparams.layer_norm_eps);
+            printf("\n");
+        }
     }
 
     // load vocab
@@ -425,7 +418,7 @@ struct bert_ctx * bert_load_from_file(const char *fname, bool use_cpu) {
             struct ggml_tensor * cur = ggml_get_tensor(ctx_ggml, name);
             size_t tensor_size = ggml_nbytes(cur);
             buffer_size += tensor_size;
-            if (verbosity >= 3) {
+            if (verbosity >= 2) {
                 printf("%s: tensor[%d]: type = %s, n_dims = %d, name = %s, offset=%zu, type=%d\n", __func__, i,
                        ggml_type_name(cur->type), ggml_n_dims(cur), cur->name, offset, cur->type);
             }
@@ -437,9 +430,7 @@ struct bert_ctx * bert_load_from_file(const char *fname, bool use_cpu) {
     if (!use_cpu) {
         new_bert->backend = ggml_backend_cuda_init(0);
         if (!new_bert->backend) {
-            printf("%s: ggml_backend_cuda_init() failed\n", __func__);
-        } else {
-            printf("%s: BERT using CUDA backend\n", __func__);
+            fprintf(stderr, "%s: ggml_backend_cuda_init() failed\n", __func__);
         }
     }
 #endif
@@ -447,16 +438,13 @@ struct bert_ctx * bert_load_from_file(const char *fname, bool use_cpu) {
 #ifdef GGML_USE_METAL
     new_bert->backend = ggml_backend_metal_init();
     if (!new_bert->backend) {
-        printf("%s: ggml_backend_metal_init() failed\n", __func__);
-    } else {
-        printf("%s: BERT using Metal backend\n", __func__);
+        fprintf(stderr, "%s: ggml_backend_metal_init() failed\n", __func__);
     }
 #endif
 
     // fall back to CPU backend
     if (!new_bert->backend) {
         new_bert->backend = ggml_backend_cpu_init();
-        printf("%s: BERT using CPU backend\n", __func__);
     }
 
     // load tensors
@@ -607,7 +595,9 @@ void bert_allocate_buffers(bert_ctx * ctx, int32_t n_max_tokens, int32_t batch_s
     ctx->compute_buffer = ggml_backend_alloc_buffer(ctx->backend, compute_memory_buffer_size);
     ctx->compute_alloc = ggml_allocr_new_from_buffer(ctx->compute_buffer);
 
-    printf("%s: compute allocated memory: %.2f MB\n\n", __func__, compute_memory_buffer_size / 1024.0 / 1024.0);
+    if (verbosity >= 1) {
+        printf("%s: compute allocated memory: %.2f MB\n\n", __func__, compute_memory_buffer_size / 1024.0 / 1024.0);
+    }
 }
 
 void bert_deallocate_buffers(bert_ctx * ctx) {

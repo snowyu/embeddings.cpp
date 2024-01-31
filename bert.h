@@ -162,7 +162,7 @@ BERT_API bert_tokens bert_tokenize(
     int32_t n_max_tokens
 );
 
-BERT_API void bert_tokenize_c(
+BERT_API int32_t bert_tokenize_c(
     struct bert_ctx * ctx,
     const char * text,
     int32_t * output,
