@@ -10,24 +10,19 @@
 #include <string>
 #include <vector>
 #include <regex>
+#include <set>
 
 // quantize a model
-bool bert_model_quantize(const std::string & fname_inp, const std::string & fname_out, int itype) {
-    // acertain quantization type
-    ggml_type type = GGML_TYPE_Q4_1;
-    switch (itype) {
-        case 2: type = GGML_TYPE_Q4_0; break;
-        case 3: type = GGML_TYPE_Q4_1; break;
-        default: fprintf(stderr, "%s: invalid quantization type %d\n", __func__, itype); return 1;
+bool bert_model_quantize(const std::string & fname_inp, const std::string & fname_out, ggml_type qtype) {
+    static const std::set<ggml_type> valid_qtypes = {
+        GGML_TYPE_Q4_0, GGML_TYPE_Q4_1, GGML_TYPE_Q5_0, GGML_TYPE_Q5_1, GGML_TYPE_Q8_0
     };
 
-    if (type != GGML_TYPE_Q4_0 && type != GGML_TYPE_Q4_1) {
-        fprintf(stderr, "%s: invalid quantization type %d\n", __func__, type);
+    // ensure supported quantization type
+    if (!valid_qtypes.contains(qtype)) {
+        fprintf(stderr, "%s: invalid quantization type %d\n", __func__, qtype);
         return false;
     }
-
-    // get type as string
-    const char * type_name = ggml_type_name(type);
 
     // load model on cpu but don't allocate compute buffers
     printf("%s: loading model from '%s'\n", __func__, fname_inp.c_str());
@@ -58,7 +53,7 @@ bool bert_model_quantize(const std::string & fname_inp, const std::string & fnam
     gguf_set_val_str(gguf, "general.architecture", "bert");
     gguf_set_val_str(gguf, "general.name", "BERT");
     gguf_set_val_str(gguf, "general.description", "GGML BERT model");
-    gguf_set_val_u32(gguf, "general.file_type", type);
+    gguf_set_val_u32(gguf, "general.file_type", qtype);
 
     // set model params
     gguf_set_val_u32(gguf, "vocab_size", hparams.n_vocab);
@@ -75,10 +70,6 @@ bool bert_model_quantize(const std::string & fname_inp, const std::string & fnam
         tokens.push_back(const_cast<const char*>(s.c_str()));
     }
     gguf_set_arr_str(gguf, "tokenizer.ggml.tokens", tokens.data(), tokens.size());
-
-    // helpful vars
-    static const char * ftype_str[] = { "f32", "f16", "q4_0", "q4_1", };
-    const std::vector<std::string> k_names = { ".*weight" };
 
     // output buffer for quants
     int tot_size_old = 0;
@@ -99,13 +90,7 @@ bool bert_model_quantize(const std::string & fname_inp, const std::string & fnam
         printf("[%5d, %5d] (%3s) = %s\n", ne[0], ne[1], tname, name);
 
         // select desired weighs by name
-        bool quantize = false;
-        for (const auto & s : k_names) {
-            if (std::regex_match(name, std::regex(s))) {
-                quantize = true;
-                break;
-            }
-        }
+        bool quantize = std::regex_match(name, std::regex(".*weight"));
 
         // make buffer for quantization
         float* data = reinterpret_cast<float *>(tensor->data);
@@ -113,25 +98,18 @@ bool bert_model_quantize(const std::string & fname_inp, const std::string & fnam
         size_t cur_size = 0;
 
         if (quantize) {
-            struct ggml_tensor * cur = ggml_new_tensor(ggml, type, n_dims, ne);
+            struct ggml_tensor * cur = ggml_new_tensor(ggml, qtype, n_dims, ne);
             ggml_set_name(cur, name);
 
             // what is this?
             std::vector<int64_t> hist_cur(1 << 4, 0);
 
-            switch (type) {
-                case GGML_TYPE_Q4_0: {
-                    cur_size = ggml_quantize_q4_0(data, cur->data, n_elem, n_cols, hist_cur.data());
-                    break;
-                }
-                case GGML_TYPE_Q4_1: {
-                    cur_size = ggml_quantize_q4_1(data, cur->data, n_elem, n_cols, hist_cur.data());
-                    break;
-                }
-                default: {
-                    fprintf(stderr, "%s: unsupported quantization type %d\n", __func__, type);
-                    return false;
-                }
+            switch (qtype) {
+                case GGML_TYPE_Q4_0: { cur_size = ggml_quantize_q4_0(data, cur->data, n_elem, n_cols, hist_cur.data()); break; }
+                case GGML_TYPE_Q4_1: { cur_size = ggml_quantize_q4_1(data, cur->data, n_elem, n_cols, hist_cur.data()); break; }
+                case GGML_TYPE_Q5_0: { cur_size = ggml_quantize_q5_0(data, cur->data, n_elem, n_cols, hist_cur.data()); break; }
+                case GGML_TYPE_Q5_1: { cur_size = ggml_quantize_q5_1(data, cur->data, n_elem, n_cols, hist_cur.data()); break; }
+                case GGML_TYPE_Q8_0: { cur_size = ggml_quantize_q8_0(data, cur->data, n_elem, n_cols, hist_cur.data()); break; }
             }
 
             // add quantized tensor
@@ -165,18 +143,27 @@ bool bert_model_quantize(const std::string & fname_inp, const std::string & fnam
     return true;
 }
 
+ggml_type ggml_type_from_str(const char * str) {
+    for (int i = GGML_TYPE_F32; i < GGML_TYPE_COUNT; i++) {
+        const ggml_type t = static_cast<ggml_type>(i);
+        const char * n = ggml_type_name(t);
+        if (strcmp(str, n) == 0) {
+            return t;
+        }
+    }
+    throw printf("ggml_type_from_str: invalid type '%s'\n", str);
+}
+
 // main entry point
 int main(int argc, char ** argv) {
     if (argc != 4) {
-        fprintf(stderr, "usage: quantize model-f32.bin model-quant.bin type\n");
-        fprintf(stderr, "  type = 2 - q4_0\n");
-        fprintf(stderr, "  type = 3 - q4_1\n");
+        fprintf(stderr, "usage: quantize model-f32.bin model-quant.bin qtype\n");
         return 1;
     }
 
     const std::string fname_inp = argv[1];
     const std::string fname_out = argv[2];
-    const int itype = atoi(argv[3]);
+    const ggml_type itype = ggml_type_from_str(argv[3]);
 
     const int64_t t_start_us = ggml_time_us();
 
