@@ -1,49 +1,53 @@
 import sys
 import json
 import torch
-import numpy as np
+
 from pathlib import Path
 from gguf import GGUFWriter, GGMLQuantizationType
-
 from transformers import AutoModel, AutoTokenizer
 
 # primay usage
 if len(sys.argv) < 2:
-    print('Usage: convert-to-ggml.py dir-model [float-type=f16,f32]\n')
+    print('Usage: convert-to-ggml.py model_dir [float-type=f16,f32]\n')
     sys.exit(1)
 
 # output in the same directory as the model
-dir_model = Path(sys.argv[1])
-ftype = sys.argv[2].lower() if len(sys.argv) > 2 else 'f16'
+model_dir = Path(sys.argv[1])
+float_type = sys.argv[2].lower() if len(sys.argv) > 2 else 'f16'
+
+# check model dir exists
+if not model_dir.exists():
+    print(f'Directory {model_dir} does not exist.')
+    sys.exit(1)
 
 # convert to ggml quantization type
-if ftype not in ['f16', 'f32']:
-    print(f'Float type must be f16 or f32, got: {ftype}')
+if float_type not in ['f16', 'f32']:
+    print(f'Float type must be f16 or f32, got: {float_type}')
     sys.exit(1)
 else:
-    qtype = GGMLQuantizationType[ftype.upper()]
-    dtype0 = {'f16': torch.float16, 'f32': torch.float32}[ftype]
+    qtype = GGMLQuantizationType[float_type.upper()]
+    dtype0 = {'f16': torch.float16, 'f32': torch.float32}[float_type]
 
-# map from ftype to string
-fname_out = dir_model / f'ggml-model-{ftype}.gguf'
+# get output file name
+fname_out = model_dir / f'ggml-model-{float_type}.gguf'
 
 # heck if the directory existsc
-if not dir_model.exists():
-    print(f'Directory {dir_model} does not exist.')
+if not model_dir.exists():
+    print(f'Directory {model_dir} does not exist.')
 
 # load hf modle data
-with open(dir_model / 'tokenizer.json', 'r', encoding='utf-8') as f:
+with open(model_dir / 'tokenizer.json', 'r', encoding='utf-8') as f:
     encoder = json.load(f)
 
-with open(dir_model / 'config.json', 'r', encoding='utf-8') as f:
+with open(model_dir / 'config.json', 'r', encoding='utf-8') as f:
     hparams = json.load(f)
 
-with open(dir_model / 'vocab.txt', 'r', encoding='utf-8') as f:
+with open(model_dir / 'vocab.txt', 'r', encoding='utf-8') as f:
     vocab = f.read().splitlines()
 
 # load tokenizer and model
-tokenizer = AutoTokenizer.from_pretrained(dir_model)
-model = AutoModel.from_pretrained(dir_model, low_cpu_mem_usage=True)
+tokenizer = AutoTokenizer.from_pretrained(model_dir)
+model = AutoModel.from_pretrained(model_dir, low_cpu_mem_usage=True)
 
 # print model
 hparam_keys = [
@@ -99,3 +103,6 @@ gguf_writer.write_header_to_file()
 gguf_writer.write_kv_data_to_file()
 gguf_writer.write_tensors_to_file()
 gguf_writer.close()
+
+# print success
+print(f'GGML model written to {fname_out}')
