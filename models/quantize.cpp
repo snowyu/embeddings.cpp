@@ -19,7 +19,7 @@ bool bert_model_quantize(const std::string & fname_inp, const std::string & fnam
     };
 
     // ensure supported quantization type
-    if (!valid_qtypes.contains(qtype)) {
+    if (valid_qtypes.count(qtype) == 0) {
         fprintf(stderr, "%s: invalid quantization type %d\n", __func__, qtype);
         return false;
     }
@@ -113,10 +113,14 @@ bool bert_model_quantize(const std::string & fname_inp, const std::string & fnam
                 case GGML_TYPE_Q5_0: { cur_size = ggml_quantize_q5_0(data, cur->data, n_elem, n_cols, hist_cur.data()); break; }
                 case GGML_TYPE_Q5_1: { cur_size = ggml_quantize_q5_1(data, cur->data, n_elem, n_cols, hist_cur.data()); break; }
                 case GGML_TYPE_Q8_0: { cur_size = ggml_quantize_q8_0(data, cur->data, n_elem, n_cols, hist_cur.data()); break; }
+                default: {
+                    fprintf(stderr, "%s: invalid quantization type %d\n", __func__, qtype);
+                    return false;
+                }
             }
 
             // print stats
-            printf("[%5d, %5d] (%3s) -> (%4s) = %s\n", ne[0], ne[1], tname, qname, name);
+            printf("[%5ld, %5ld] (%3s) -> (%4s) = %s\n", ne[0], ne[1], tname, qname, name);
 
             // add quantized tensor
             gguf_add_tensor(gguf, cur);
