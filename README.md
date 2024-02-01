@@ -1,6 +1,6 @@
 # bert.cpp
 
-[ggml](https://github.com/ggerganov/ggml) inference of BERT embedding models including [SentenceTransformers (sbert.net)](https://sbert.net/), [BGE series](https://huggingface.co/BAAI/bge-base-en-v1.5), and others. High quality sentence embeddings in pure C++ and Python (bindings).
+This is a [ggml](https://github.com/ggerganov/ggml) implementation of the BERT embedding architecture. It supports inference on both CPU and CUDA in floating point and a wide variety of quantization schemes. Includes Python bindings for batched inference.
 
 This repo is a fork of original [bert.cpp](https://github.com/skeskinen/bert.cpp) as well as [embeddings.cpp](https://github.com/xyzhang626/embeddings.cpp). Thanks to both of you!
 
