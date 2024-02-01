@@ -411,7 +411,7 @@ struct bert_ctx * bert_load_from_file(const char *fname, bool use_cpu) {
     }
 
     // model tensor sizing
-    size_t buffer_size = 0;
+    size_t buffer_size = 32*1024; // need some extra room??
     {
         for (int i = 0; i < n_tensors; ++i) {
             const char * name = gguf_get_tensor_name(ctx_gguf, i);

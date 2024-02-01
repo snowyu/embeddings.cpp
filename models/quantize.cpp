@@ -24,6 +24,9 @@ bool bert_model_quantize(const std::string & fname_inp, const std::string & fnam
         return false;
     }
 
+    // get quantization type name
+    const char * qname = ggml_type_name(qtype);
+
     // load model on cpu but don't allocate compute buffers
     printf("%s: loading model from '%s'\n", __func__, fname_inp.c_str());
     bert_ctx * ctx = bert_load_from_file(fname_inp.c_str(), true);
@@ -86,11 +89,11 @@ bool bert_model_quantize(const std::string & fname_inp, const std::string & fnam
         const int64_t n_elem = ggml_nelements(tensor);
         const int64_t n_cols = tensor->ne[0];
 
-        // print stats
-        printf("[%5d, %5d] (%3s) = %s\n", ne[0], ne[1], tname, name);
-
         // select desired weighs by name
-        bool quantize = std::regex_match(name, std::regex(".*weight"));
+        bool quantize = (
+            std::regex_match(name, std::regex(".*weight")) &&
+            !std::regex_match(name, std::regex(".*LayerNorm.*"))
+        );
 
         // make buffer for quantization
         float* data = reinterpret_cast<float *>(tensor->data);
@@ -111,6 +114,9 @@ bool bert_model_quantize(const std::string & fname_inp, const std::string & fnam
                 case GGML_TYPE_Q5_1: { cur_size = ggml_quantize_q5_1(data, cur->data, n_elem, n_cols, hist_cur.data()); break; }
                 case GGML_TYPE_Q8_0: { cur_size = ggml_quantize_q8_0(data, cur->data, n_elem, n_cols, hist_cur.data()); break; }
             }
+
+            // print stats
+            printf("[%5d, %5d] (%3s) -> (%4s) = %s\n", ne[0], ne[1], tname, qname, name);
 
             // add quantized tensor
             gguf_add_tensor(gguf, cur);
