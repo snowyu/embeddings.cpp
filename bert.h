@@ -159,14 +159,14 @@ BERT_API void bert_encode_batch_c(
 BERT_API bert_tokens bert_tokenize(
     struct bert_ctx * ctx,
     bert_string text,
-    int32_t n_max_tokens
+    uint64_t n_max_tokens
 );
 
-BERT_API int32_t bert_tokenize_c(
+BERT_API uint64_t bert_tokenize_c(
     struct bert_ctx * ctx,
     const char * text,
     int32_t * output,
-    int32_t n_max_tokens
+    uint64_t n_max_tokens
 );
 
 BERT_API void bert_forward(

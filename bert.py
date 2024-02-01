@@ -92,12 +92,12 @@ class BertModel:
 
         self.lib.bert_free.argtypes = [ctypes.c_void_p]
 
-        self.lib.bert_tokenize_c.restype = ctypes.c_int32
+        self.lib.bert_tokenize_c.restype = ctypes.c_uint64
         self.lib.bert_tokenize_c.argtypes = [
             ctypes.c_void_p,                 # struct bert_ctx * ctx
             ctypes.c_char_p,                 # const char * text
             ctypes.POINTER(ctypes.c_int32),  # int32_t * output
-            ctypes.c_int32,                  # int32_t n_max_tokens
+            ctypes.c_uint64,                 # uint64_t n_max_tokens
         ]
 
         self.lib.bert_encode_batch_c.argtypes = [

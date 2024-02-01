@@ -72,7 +72,7 @@ static void tensor_stats(ggml_tensor * t) {
     int32_t src0 = t->src[0] ? t->src[0]->backend : -1;
     int32_t src1 = t->src[1] ? t->src[1]->backend : -1;
     printf(
-        "type = %s, dims = %d, shape = (%d, %d, %d, %d), backend = %d, src0 = %d, src1 = %d\n",
+        "type = %s, dims = %d, shape = (%ld, %ld, %ld, %ld), backend = %d, src0 = %d, src1 = %d\n",
         ggml_type_name(t->type), ggml_n_dims(t), t->ne[0], t->ne[1], t->ne[2], t->ne[3], t->backend, src0, src1
     );
 }
@@ -190,7 +190,7 @@ const char* bert_vocab_id_to_token(bert_ctx * ctx, bert_token id) {
     return "[UNK TOKEN from bert_vocab]";
 }
 
-bert_tokens bert_tokenize(struct bert_ctx * ctx, bert_string text, int32_t n_max_tokens) {
+bert_tokens bert_tokenize(struct bert_ctx * ctx, bert_string text, uint64_t n_max_tokens) {
     int cls_tok_id = 101;
     int sep_tok_id = 102;
     int unk_tok_id = 100;
@@ -198,13 +198,14 @@ bert_tokens bert_tokenize(struct bert_ctx * ctx, bert_string text, int32_t n_max
 
     std::string ori_str = text;
     ori_str = bert_normalize_prompt(ori_str);
+    uint64_t ori_size = ori_str.size();
 
     // single punct / single symbol / single digit
     // baseline: add whitespace on the left and right of punct and chinese characters
     std::vector<std::string> words;
     std::string new_str = "";
-    int i = 0;
-    while (i < ori_str.size()) {
+    uint64_t i = 0;
+    while (i < ori_size) {
         int utf_char_len = utf8_len(ori_str[i]);
         if ((utf_char_len == 1) && ispunct(ori_str[i])) {
             new_str += " ";
@@ -225,8 +226,8 @@ bert_tokens bert_tokenize(struct bert_ctx * ctx, bert_string text, int32_t n_max
     }
 
     // split by whitespace
-    int l = 0;
-    int r = 0;
+    uint64_t l = 0;
+    uint64_t r = 0;
     while (r < new_str.size()) {
         // if is whitespace
         if (isspace(new_str[r])) {
@@ -299,10 +300,10 @@ bert_tokens bert_tokenize(struct bert_ctx * ctx, bert_string text, int32_t n_max
 }
 
 // c-string interface to tokenizer
-int32_t bert_tokenize_c(struct bert_ctx * ctx, const char * text, int32_t * output, int32_t n_max_tokens) {
+uint64_t bert_tokenize_c(struct bert_ctx * ctx, const char * text, int32_t * output, uint64_t n_max_tokens) {
     bert_string str(text);
     bert_tokens tokens = bert_tokenize(ctx, str, n_max_tokens);
-    for (int i = 0; i < tokens.size(); ++i) {
+    for (uint64_t i = 0; i < tokens.size(); ++i) {
         output[i] = tokens[i];
     }
     return tokens.size();
@@ -327,13 +328,13 @@ int32_t bert_n_max_tokens(bert_ctx * ctx) {
 struct bert_ctx * bert_load_from_file(const char *fname, bool use_cpu) {
     struct ggml_context * ctx_ggml = NULL;
 
-    struct gguf_init_params params = {
+    struct gguf_init_params gguf_params = {
         /*.no_alloc = */ true,
         /*.ctx      = */ &ctx_ggml,
     };
 
     // open gguf file
-    struct gguf_context * ctx_gguf = gguf_init_from_file(fname, params);
+    struct gguf_context * ctx_gguf = gguf_init_from_file(fname, gguf_params);
     if (!ctx_gguf) {
         fprintf(stderr, "%s: failed to load BERT model from %s. Does this file exist?\n", __func__, fname);
         return nullptr;
@@ -352,7 +353,7 @@ struct bert_ctx * bert_load_from_file(const char *fname, bool use_cpu) {
         printf("%s: model name:   %s\n", __func__, name.c_str());
         printf("%s: description:  %s\n", __func__, description.c_str());
         printf("%s: GGUF version: %d\n", __func__, version);
-        printf("%s: alignment:    %zu\n", __func__, alignment);
+        printf("%s: alignment:    %d\n", __func__, alignment);
         printf("%s: n_tensors:    %d\n", __func__, n_tensors);
         printf("%s: n_kv:         %d\n", __func__, n_kv);
         printf("%s: ftype:        %s\n", __func__, ftype_str.c_str());
@@ -456,17 +457,17 @@ struct bert_ctx * bert_load_from_file(const char *fname, bool use_cpu) {
         std::vector<uint8_t> read_buf;
 
         // context params for tensors
-        struct ggml_init_params params = {
+        struct ggml_init_params ggml_params = {
             /*.mem_size =*/ (n_tensors + 1) * ggml_tensor_overhead(),
             /*.mem_buffer =*/ NULL,
             /*.no_alloc =*/ true,
         };
 
         // create context for tensors
-        new_bert->ctx_data = ggml_init(params);
+        new_bert->ctx_data = ggml_init(ggml_params);
         if (!new_bert->ctx_data) {
             fprintf(stderr, "%s: ggml_init() failed\n", __func__);
-            free(new_bert);
+            delete new_bert;
             return nullptr;
         }
 
@@ -474,7 +475,7 @@ struct bert_ctx * bert_load_from_file(const char *fname, bool use_cpu) {
         auto fin = std::ifstream(fname, std::ios::binary);
         if (!fin) {
             printf("cannot open model file for loading tensors\n");
-            free(new_bert);
+            delete new_bert;
             return nullptr;
         }
 
@@ -658,7 +659,7 @@ ggml_cgraph * bert_build_graph(bert_ctx * ctx, bert_batch batch) {
     // get the max length of the batch
     int n_batch_size = batch.size();
     int cur_max_len = 0;
-    for (int ba = 0; ba < batch.size(); ba++) {
+    for (uint64_t ba = 0; ba < batch.size(); ba++) {
         int n = batch[ba].size();
         if (n > cur_max_len)
             cur_max_len = n;
@@ -891,22 +892,13 @@ void bert_encode_batch(struct bert_ctx * ctx, bert_strings texts, float * embedd
     int32_t N = bert_n_max_tokens(ctx);
     int32_t n_input = texts.size();
 
-    int64_t t_beg_us = ggml_time_us();
-
     bert_batch batch;
     for (int i = 0; i < n_input; i++) {
         bert_tokens tokens = bert_tokenize(ctx, texts[i], N);
         batch.push_back(tokens);
     }
 
-    int64_t t_mid_us = ggml_time_us();
-
     bert_forward_batch(ctx, batch, embeddings, n_threads);
-
-    int64_t t_end_us = ggml_time_us();
-
-    // printf("tokenization: %.3f ms\n", (t_mid_us - t_beg_us) / 1000.0);
-    // printf("inference: %.3f ms\n", (t_end_us - t_mid_us) / 1000.0);
 }
 
 void bert_encode_batch_c(struct bert_ctx * ctx, const char ** texts, float * embeddings, int32_t n_input, int32_t n_threads) {
