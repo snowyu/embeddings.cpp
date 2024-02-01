@@ -431,6 +431,8 @@ struct bert_ctx * bert_load_from_file(const char *fname, bool use_cpu) {
         new_bert->backend = ggml_backend_cuda_init(0);
         if (!new_bert->backend) {
             fprintf(stderr, "%s: ggml_backend_cuda_init() failed\n", __func__);
+        } else {
+            printf("%s: using CUDA backend\n", __func__);
         }
     }
 #endif
@@ -445,6 +447,7 @@ struct bert_ctx * bert_load_from_file(const char *fname, bool use_cpu) {
     // fall back to CPU backend
     if (!new_bert->backend) {
         new_bert->backend = ggml_backend_cpu_init();
+        printf("%s: using CPU backend\n", __func__);
     }
 
     // load tensors
