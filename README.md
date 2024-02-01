@@ -4,9 +4,7 @@
 
 This repo is a fork of original [bert.cpp](https://github.com/skeskinen/bert.cpp) as well as [embeddings.cpp](https://github.com/xyzhang626/embeddings.cpp). Thanks to both of you!
 
-## Usage
-
-### Installation
+### Install
 
 Fetch this respository and download the submodules with
 ```sh
@@ -36,7 +34,7 @@ cmake -DCMAKE_CUDA_COMPILER=/home/doug/programs/cuda/bin/nvcc -DGGML_CUBLAS=ON -
 
 On some distros, you also need to specifiy the host C++ compiler. To do this, I suggest setting the `CUDAHOSTCXX` environment variable to your C++ bindir.
 
-### Running
+### Excecute
 
 All executables are placed in `build/bin`. To run inference on a given text, run
 ```sh
@@ -44,7 +42,17 @@ build/bin/main -m models/bge-base-en-v1.5/ggml-model-f16.gguf -p "Hello world"
 ```
 To force CPU usage, add the flag `-c`.
 
-### Quantization
+### Python
+
+You can also run everything through Python, which is particularly useful for batch inference. For instance,
+```python
+import bert
+mod = bert.BertModel('models/bge-base-en-v1.5/ggml-model-f16.gguf')
+emb = mod.embed(batch)
+```
+where `batch` is a list of strings and `emb` is a `numpy` array of embedding vectors.
+
+### Quantize
 
 You can quantize models with the command
 ```sh
