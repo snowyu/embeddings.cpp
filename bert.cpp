@@ -1,3 +1,11 @@
+/*
+BERT inference in GGML
+
+Forked with gratitude from:
+https://github.com/skeskinen/bert.cpp
+https://github.com/xyzhang626/embeddings.cpp
+*/
+
 #include "bert.h"
 #include "ggml.h"
 
