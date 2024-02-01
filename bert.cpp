@@ -13,6 +13,10 @@ https://github.com/xyzhang626/embeddings.cpp
 #include "ggml-cuda.h"
 #endif
 
+#ifdef GGML_USE_METAL
+#include "ggml-metal.h"
+#endif
+
 #include <cmath>
 #include <fstream>
 #include <map>
