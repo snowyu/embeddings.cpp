@@ -451,9 +451,13 @@ struct bert_ctx * bert_load_from_file(const char *fname, bool use_cpu) {
 #endif
 
 #ifdef GGML_USE_METAL
-    new_bert->backend = ggml_backend_metal_init();
-    if (!new_bert->backend) {
-        fprintf(stderr, "%s: ggml_backend_metal_init() failed\n", __func__);
+    if (!use_cpu) {
+        new_bert->backend = ggml_backend_metal_init();
+        if (!new_bert->backend) {
+            fprintf(stderr, "%s: ggml_backend_metal_init() failed\n", __func__);
+        } else {
+            fprintf(stderr, "%s: using Metal backend\n", __func__);
+        }
     }
 #endif
 
