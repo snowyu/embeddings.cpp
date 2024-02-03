@@ -14,16 +14,17 @@ endif()
 #
 
 # debug
-option(BERT_ALL_WARNINGS           "bert: enable all compiler warnings"                   OFF)
-option(BERT_ALL_WARNINGS_3RD_PARTY "bert: enable all compiler warnings in 3rd party libs" OFF)
-option(BERT_GPROF                  "bert: enable gprof"                                   OFF)
-option(BERT_PERF                   "bert: enable performance logging"                     OFF)
+option(GGML_ALL_WARNINGS           "ggml: enable all compiler warnings"                  OFF)
+option(GGML_PERF                   "ggml: enable performance logging"                    OFF)
 
 # instruction set specific
-option(BERT_AVX                    "bert: enable AVX"                                     ON)
-option(BERT_AVX2                   "bert: enable AVX2"                                    ON)
-option(BERT_FMA                    "bert: enable FMA"                                     ON)
-option(BERT_CUBLAS                 "bert: enable cuBLAS"                                  OFF)
+option(GGML_AVX                    "ggml: enable AVX"                                     ON)
+option(GGML_AVX2                   "ggml: enable AVX2"                                    ON)
+option(GGML_FMA                    "ggml: enable FMA"                                     ON)
+
+# backend specific
+option(GGML_CUBLAS                 "ggml: use cuBLAS"                                    OFF)
+option(GGML_METAL                  "ggml: use Metal"                                     OFF)
 
 #
 # Compile flags
@@ -34,7 +35,7 @@ set(CMAKE_C_STANDARD_REQUIRED true)
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
 
-if (BERT_ALL_WARNINGS)
+if (GGML_ALL_WARNINGS)
     add_compile_options(
         -Wall
         -Wextra
@@ -46,42 +47,40 @@ endif()
 
 add_compile_options(-Wno-format)
 
-if(BERT_PERF)
-    add_compile_definitions(GGML_PERF)
-endif()
-
 set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -O3")
 set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3")
-
-if (BERT_LTO)
-    include(CheckIPOSupported)
-    check_ipo_supported(RESULT result OUTPUT output)
-    if (result)
-        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
-    else()
-        message(WARNING "IPO is not supported: ${output}")
-    endif()
-endif()
 
 # architecture specific
 message(STATUS "CMAKE_SYSTEM_PROCESSOR: ${CMAKE_SYSTEM_PROCESSOR}")
 if (${CMAKE_SYSTEM_PROCESSOR} MATCHES "^(x86_64|i686|AMD64)$")
     message(STATUS "x86 detected")
     add_compile_options(-mf16c)
-    if (BERT_FMA)
+    if (GGML_FMA)
         add_compile_options(-mfma)
     endif()
-    if (BERT_AVX)
+    if (GGML_AVX)
         add_compile_options(-mavx)
     endif()
-    if (BERT_AVX2)
+    if (GGML_AVX2)
         add_compile_options(-mavx2)
     endif()
-    if (GGML_CUBLAS)
-        add_compile_definitions(GGML_USE_CUBLAS)
-    endif()
-else()
+    else()
     message(STATUS "Unknown architecture")
+endif()
+
+#
+# backends
+#
+
+if (GGML_CUBLAS)
+    add_compile_definitions(GGML_USE_CUBLAS)
+endif()
+
+if (GGML_METAL)
+    add_compile_definitions(GGML_USE_METAL)
+
+    # copy ggml-metal.metal to bin directory
+    configure_file(ggml/src/ggml-metal.metal ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/ggml-metal.metal COPYONLY)
 endif()
 
 #
