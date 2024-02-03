@@ -83,7 +83,7 @@ static std::string get_ftype(int ftype) {
 static void tensor_stats(ggml_tensor * t) {
     int32_t src0 = t->src[0] ? t->src[0]->backend : -1;
     int32_t src1 = t->src[1] ? t->src[1]->backend : -1;
-    fprintf(stderr, 
+    fprintf(stderr,
         "type = %s, dims = %d, shape = (%ld, %ld, %ld, %ld), backend = %d, src0 = %d, src1 = %d\n",
         ggml_type_name(t->type), ggml_n_dims(t), t->ne[0], t->ne[1], t->ne[2], t->ne[3], t->backend, src0, src1
     );
@@ -451,9 +451,13 @@ struct bert_ctx * bert_load_from_file(const char *fname, bool use_cpu) {
 #endif
 
 #ifdef GGML_USE_METAL
-    new_bert->backend = ggml_backend_metal_init();
-    if (!new_bert->backend) {
-        fprintf(stderr, "%s: ggml_backend_metal_init() failed\n", __func__);
+    if (!use_cpu) {
+        new_bert->backend = ggml_backend_metal_init();
+        if (!new_bert->backend) {
+            fprintf(stderr, "%s: ggml_backend_metal_init() failed\n", __func__);
+        } else {
+            fprintf(stderr, "%s: using Metal backend\n", __func__);
+        }
     }
 #endif
 
@@ -786,7 +790,7 @@ ggml_cgraph * bert_build_graph(bert_ctx * ctx, bert_batch batch) {
             struct ggml_tensor * V = cur;
             V = ggml_add(ctx0, ggml_mul_mat(ctx0, model.layers[il].v_w, V), model.layers[il].v_b); // [E, L, B]
             V = ggml_reshape_4d(ctx0, V, d_head, n_head, cur_max_len, n_batch_size); // [D, H, L, B]
-            V = ggml_cont(ctx0, ggml_permute(ctx0, V, 0, 2, 1, 3)); // [D, L, H, B]
+            V = ggml_cont(ctx0, ggml_permute(ctx0, V, 1, 2, 0, 3)); // [L, D, H, B]
 
             // scaled attention
             struct ggml_tensor * KQ = ggml_mul_mat(ctx0, K, Q); // -> [L, L, H, B]
@@ -795,7 +799,6 @@ ggml_cgraph * bert_build_graph(bert_ctx * ctx, bert_batch batch) {
             KQ = ggml_soft_max(ctx0, KQ);
 
             // get weighted values
-            V = ggml_cont(ctx0, ggml_transpose(ctx0, V)); // -> [L, D, H, B]
             struct ggml_tensor * KQV = ggml_mul_mat(ctx0, V, KQ); // -> [D, L, H, B]
             KQV = ggml_cont(ctx0, ggml_permute(ctx0, KQV, 0, 2, 1, 3)); // -> [D, H, L, B]
 

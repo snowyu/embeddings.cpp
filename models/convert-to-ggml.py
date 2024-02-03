@@ -47,7 +47,7 @@ with open(model_dir / 'vocab.txt', 'r', encoding='utf-8') as f:
 
 # load tokenizer and model
 tokenizer = AutoTokenizer.from_pretrained(model_dir)
-model = AutoModel.from_pretrained(model_dir, low_cpu_mem_usage=True)
+model = AutoModel.from_pretrained(model_dir)
 
 # print model
 hparam_keys = [
