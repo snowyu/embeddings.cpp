@@ -103,10 +103,7 @@ int main(int argc, char ** argv) {
 
     // create a batch
     const int n_embd = bert_n_embd(bctx);
-    bert_batch batch;
-    for (int i = 0; i < 32; i++) {
-        batch.push_back(tokens);
-    }
+    bert_batch batch = { tokens };
 
     // run the embedding
     std::vector<float> embed(batch.size()*n_embd);
@@ -116,8 +113,9 @@ int main(int argc, char ** argv) {
     int64_t t_eval_us = t_end_us - t_mid_us;
     
     printf("[ ");
-    for (int i = 0; i < 8; i++) {
-        printf("%1.4f, ", embed[i]);
+    for (int i = 0; i < n_embd; i++) {
+        const char * sep = (i == n_embd - 1) ? "" : ",";
+        printf("%1.4f%s ", sep, embed[i]);
     }
     printf("]\n");
 
