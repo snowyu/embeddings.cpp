@@ -790,7 +790,7 @@ ggml_cgraph * bert_build_graph(bert_ctx * ctx, bert_batch batch) {
             struct ggml_tensor * V = cur;
             V = ggml_add(ctx0, ggml_mul_mat(ctx0, model.layers[il].v_w, V), model.layers[il].v_b); // [E, L, B]
             V = ggml_reshape_4d(ctx0, V, d_head, n_head, cur_max_len, n_batch_size); // [D, H, L, B]
-            V = ggml_cont(ctx0, ggml_permute(ctx0, V, 0, 2, 1, 3)); // [D, L, H, B]
+            V = ggml_cont(ctx0, ggml_permute(ctx0, V, 1, 2, 0, 3)); // [L, D, H, B]
 
             // scaled attention
             struct ggml_tensor * KQ = ggml_mul_mat(ctx0, K, Q); // -> [L, L, H, B]
@@ -799,7 +799,6 @@ ggml_cgraph * bert_build_graph(bert_ctx * ctx, bert_batch batch) {
             KQ = ggml_soft_max(ctx0, KQ);
 
             // get weighted values
-            V = ggml_cont(ctx0, ggml_transpose(ctx0, V)); // -> [L, D, H, B]
             struct ggml_tensor * KQV = ggml_mul_mat(ctx0, V, KQ); // -> [D, L, H, B]
             KQV = ggml_cont(ctx0, ggml_permute(ctx0, KQV, 0, 2, 1, 3)); // -> [D, H, L, B]
 
