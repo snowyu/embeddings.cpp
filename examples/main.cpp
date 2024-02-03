@@ -115,7 +115,7 @@ int main(int argc, char ** argv) {
     printf("[ ");
     for (int i = 0; i < n_embd; i++) {
         const char * sep = (i == n_embd - 1) ? "" : ",";
-        printf("%1.4f%s ", sep, embed[i]);
+        printf("%1.4f%s ",embed[i], sep);
     }
     printf("]\n");
 
