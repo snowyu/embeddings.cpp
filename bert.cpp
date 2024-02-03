@@ -83,7 +83,7 @@ static std::string get_ftype(int ftype) {
 static void tensor_stats(ggml_tensor * t) {
     int32_t src0 = t->src[0] ? t->src[0]->backend : -1;
     int32_t src1 = t->src[1] ? t->src[1]->backend : -1;
-    printf(
+    fprintf(stderr, 
         "type = %s, dims = %d, shape = (%ld, %ld, %ld, %ld), backend = %d, src0 = %d, src1 = %d\n",
         ggml_type_name(t->type), ggml_n_dims(t), t->ne[0], t->ne[1], t->ne[2], t->ne[3], t->backend, src0, src1
     );
@@ -362,14 +362,14 @@ struct bert_ctx * bert_load_from_file(const char *fname, bool use_cpu) {
         const std::string ftype_str = get_ftype(ftype);
         const std::string description = get_str(ctx_gguf, KEY_DESCRIPTION);
         const std::string name = get_str(ctx_gguf, KEY_NAME);
-        printf("%s: model name:   %s\n", __func__, name.c_str());
-        printf("%s: description:  %s\n", __func__, description.c_str());
-        printf("%s: GGUF version: %d\n", __func__, version);
-        printf("%s: alignment:    %d\n", __func__, alignment);
-        printf("%s: n_tensors:    %d\n", __func__, n_tensors);
-        printf("%s: n_kv:         %d\n", __func__, n_kv);
-        printf("%s: ftype:        %s\n", __func__, ftype_str.c_str());
-        printf("\n");
+        fprintf(stderr, "%s: model name:   %s\n", __func__, name.c_str());
+        fprintf(stderr, "%s: description:  %s\n", __func__, description.c_str());
+        fprintf(stderr, "%s: GGUF version: %d\n", __func__, version);
+        fprintf(stderr, "%s: alignment:    %d\n", __func__, alignment);
+        fprintf(stderr, "%s: n_tensors:    %d\n", __func__, n_tensors);
+        fprintf(stderr, "%s: n_kv:         %d\n", __func__, n_kv);
+        fprintf(stderr, "%s: ftype:        %s\n", __func__, ftype_str.c_str());
+        fprintf(stderr, "\n");
     }
     const int n_tensors = gguf_get_n_tensors(ctx_gguf);
 
@@ -390,14 +390,14 @@ struct bert_ctx * bert_load_from_file(const char *fname, bool use_cpu) {
         hparams.layer_norm_eps = get_f32(ctx_gguf, "layer_norm_eps");
 
         if (verbosity >= 1) {
-            printf("%s: n_vocab        = %d\n", __func__, hparams.n_vocab);
-            printf("%s: n_max_tokens   = %d\n", __func__, hparams.n_max_tokens);
-            printf("%s: n_embd         = %d\n", __func__, hparams.n_embd);
-            printf("%s: n_intermediate = %d\n", __func__, hparams.n_intermediate);
-            printf("%s: n_head         = %d\n", __func__, hparams.n_head);
-            printf("%s: n_layer        = %d\n", __func__, hparams.n_layer);
-            printf("%s: layer_norm_eps = %g\n", __func__, hparams.layer_norm_eps);
-            printf("\n");
+            fprintf(stderr, "%s: n_vocab        = %d\n", __func__, hparams.n_vocab);
+            fprintf(stderr, "%s: n_max_tokens   = %d\n", __func__, hparams.n_max_tokens);
+            fprintf(stderr, "%s: n_embd         = %d\n", __func__, hparams.n_embd);
+            fprintf(stderr, "%s: n_intermediate = %d\n", __func__, hparams.n_intermediate);
+            fprintf(stderr, "%s: n_head         = %d\n", __func__, hparams.n_head);
+            fprintf(stderr, "%s: n_layer        = %d\n", __func__, hparams.n_layer);
+            fprintf(stderr, "%s: layer_norm_eps = %g\n", __func__, hparams.layer_norm_eps);
+            fprintf(stderr, "\n");
         }
     }
 
@@ -432,7 +432,7 @@ struct bert_ctx * bert_load_from_file(const char *fname, bool use_cpu) {
             size_t tensor_size = ggml_nbytes(cur);
             buffer_size += tensor_size;
             if (verbosity >= 2) {
-                printf("%s: tensor[%d]: type = %s, n_dims = %d, name = %s, offset=%zu, type=%d\n", __func__, i,
+                fprintf(stderr, "%s: tensor[%d]: type = %s, n_dims = %d, name = %s, offset=%zu, type=%d\n", __func__, i,
                        ggml_type_name(cur->type), ggml_n_dims(cur), cur->name, offset, cur->type);
             }
         }
@@ -445,7 +445,7 @@ struct bert_ctx * bert_load_from_file(const char *fname, bool use_cpu) {
         if (!new_bert->backend) {
             fprintf(stderr, "%s: ggml_backend_cuda_init() failed\n", __func__);
         } else {
-            printf("%s: using CUDA backend\n", __func__);
+            fprintf(stderr, "%s: using CUDA backend\n", __func__);
         }
     }
 #endif
@@ -460,7 +460,7 @@ struct bert_ctx * bert_load_from_file(const char *fname, bool use_cpu) {
     // fall back to CPU backend
     if (!new_bert->backend) {
         new_bert->backend = ggml_backend_cpu_init();
-        printf("%s: using CPU backend\n", __func__);
+        fprintf(stderr, "%s: using CPU backend\n", __func__);
     }
 
     // load tensors
@@ -486,7 +486,7 @@ struct bert_ctx * bert_load_from_file(const char *fname, bool use_cpu) {
         // open model gguf file
         auto fin = std::ifstream(fname, std::ios::binary);
         if (!fin) {
-            printf("cannot open model file for loading tensors\n");
+            fprintf(stderr, "cannot open model file for loading tensors\n");
             delete new_bert;
             return nullptr;
         }
@@ -514,7 +514,7 @@ struct bert_ctx * bert_load_from_file(const char *fname, bool use_cpu) {
             const size_t offset = gguf_get_data_offset(ctx_gguf) + gguf_get_tensor_offset(ctx_gguf, i);
             fin.seekg(offset, std::ios::beg);
             if (!fin) {
-                printf("%s: failed to seek for tensor %s\n", __func__, name);
+                fprintf(stderr, "%s: failed to seek for tensor %s\n", __func__, name);
                 bert_free(new_bert);
                 return nullptr;
             }
@@ -612,7 +612,7 @@ void bert_allocate_buffers(bert_ctx * ctx, int32_t n_max_tokens, int32_t batch_s
     ctx->compute_alloc = ggml_allocr_new_from_buffer(ctx->compute_buffer);
 
     if (verbosity >= 1) {
-        printf("%s: compute allocated memory: %.2f MB\n\n", __func__, compute_memory_buffer_size / 1024.0 / 1024.0);
+        fprintf(stderr, "%s: compute allocated memory: %.2f MB\n\n", __func__, compute_memory_buffer_size / 1024.0 / 1024.0);
     }
 }
 
