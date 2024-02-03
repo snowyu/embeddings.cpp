@@ -25,15 +25,21 @@ python convert-to-ggml.py BAAI/bge-base-en-v1.5 f32
 To build the dynamic library for usage from Python
 ```sh
 cmake -B build .
-make -C build
+make -C build -j
 ```
 
-If you're compiling for GPU, you may need to run something like
+If you're compiling for GPU, you should run
 ```sh
-cmake -DCMAKE_CUDA_COMPILER=/home/doug/programs/cuda/bin/nvcc -DGGML_CUBLAS=ON -B build .
+cmake -DGGML_CUBLAS=ON -B build .
+make -C build -j
 ```
-
 On some distros, you also need to specifiy the host C++ compiler. To do this, I suggest setting the `CUDAHOSTCXX` environment variable to your C++ bindir.
+
+And for Apple Metal, you should run
+```sh
+cmake -DGGML_METAL=ON -B build .
+make -C build -j
+```
 
 ### Excecute
 
