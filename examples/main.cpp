@@ -97,9 +97,9 @@ int main(int argc, char ** argv) {
 
     // print the tokens
     for (auto & tok : tokens) {
-        printf("%d -> %s\n", tok, bert_vocab_id_to_token(bctx, tok));
+        fprintf(stderr, "%d -> %s\n", tok, bert_vocab_id_to_token(bctx, tok));
     }
-    printf("\n");
+    fprintf(stderr, "\n");
 
     // create a batch
     const int n_embd = bert_n_embd(bctx);
@@ -123,11 +123,11 @@ int main(int argc, char ** argv) {
     {
         const int64_t t_main_end_us = ggml_time_us();
 
-        printf("\n");
-        printf("%s:     load time = %8.2f ms\n", __func__, t_load_us/1000.0f);
-        printf("%s:    token time = %8.2f ms / %.2f ms per token\n", __func__, t_token_us/1000.0f, t_token_us/1000.0f/tokens.size());
-        printf("%s:     eval time = %8.2f ms / %.2f ms per token\n", __func__, t_eval_us/1000.0f, t_eval_us/1000.0f/tokens.size());
-        printf("%s:    total time = %8.2f ms\n", __func__, (t_main_end_us - t_main_start_us)/1000.0f);
+        fprintf(stderr, "\n");
+        fprintf(stderr, "%s:     load time = %8.2f ms\n", __func__, t_load_us/1000.0f);
+        fprintf(stderr, "%s:    token time = %8.2f ms / %.2f ms per token\n", __func__, t_token_us/1000.0f, t_token_us/1000.0f/tokens.size());
+        fprintf(stderr, "%s:     eval time = %8.2f ms / %.2f ms per token\n", __func__, t_eval_us/1000.0f, t_eval_us/1000.0f/tokens.size());
+        fprintf(stderr, "%s:    total time = %8.2f ms\n", __func__, (t_main_end_us - t_main_start_us)/1000.0f);
     }
 
     return 0;
