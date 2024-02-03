@@ -6,9 +6,10 @@ This repo is a fork of original [bert.cpp](https://github.com/skeskinen/bert.cpp
 
 ### Install
 
-Fetch this respository and download the submodules with
+Fetch this respository then download submodules and install packages with
 ```sh
 git submodule update --init --recursive
+pip install -r requirements.txt
 ```
 
 To fetch models from `huggingface`  and convert them to `gguf` format run the following
