@@ -83,7 +83,7 @@ static std::string get_ftype(int ftype) {
 static void tensor_stats(ggml_tensor * t) {
     int32_t src0 = t->src[0] ? t->src[0]->backend : -1;
     int32_t src1 = t->src[1] ? t->src[1]->backend : -1;
-    fprintf(stderr, 
+    fprintf(stderr,
         "type = %s, dims = %d, shape = (%ld, %ld, %ld, %ld), backend = %d, src0 = %d, src1 = %d\n",
         ggml_type_name(t->type), ggml_n_dims(t), t->ne[0], t->ne[1], t->ne[2], t->ne[3], t->backend, src0, src1
     );

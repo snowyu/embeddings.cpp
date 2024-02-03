@@ -111,7 +111,7 @@ int main(int argc, char ** argv) {
 
     int64_t t_end_us = ggml_time_us();
     int64_t t_eval_us = t_end_us - t_mid_us;
-    
+
     printf("[ ");
     for (int i = 0; i < n_embd; i++) {
         const char * sep = (i == n_embd - 1) ? "" : ",";
