@@ -16,8 +16,8 @@ To fetch models from `huggingface`  and convert them to `gguf` format run the fo
 ```sh
 cd models
 python download-repo.py BAAI/bge-base-en-v1.5 # or any other model
-python convert-to-ggml.py BAAI/bge-base-en-v1.5 f16
-python convert-to-ggml.py BAAI/bge-base-en-v1.5 f32
+python convert-to-ggml.py bge-base-en-v1.5 f16
+python convert-to-ggml.py bge-base-en-v1.5 f32
 ```
 
 ### Build
