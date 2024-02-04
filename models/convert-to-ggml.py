@@ -43,7 +43,7 @@ with open(model_dir / 'config.json', 'r', encoding='utf-8') as f:
     hparams = json.load(f)
 
 with open(model_dir / 'vocab.txt', 'r', encoding='utf-8') as f:
-    vocab = f.read().splitlines()
+    vocab = [line.rstrip('\n') for line in f.readlines()]
 
 # load tokenizer and model
 tokenizer = AutoTokenizer.from_pretrained(model_dir)
