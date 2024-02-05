@@ -1,11 +1,8 @@
 import sys
-import json
 import torch
 
-from pathlib import Path
-from gguf import GGUFWriter, GGMLQuantizationType, TokenType
+from gguf import GGUFWriter, GGMLQuantizationType
 from transformers import AutoModel, AutoTokenizer
-from sentencepiece import SentencePieceProcessor
 
 KEY_PAD_ID = 'tokenizer.ggml.padding_token_id'
 KEY_UNK_ID = 'tokenizer.ggml.unknown_token_id'
@@ -14,18 +11,7 @@ KEY_EOS_ID = 'tokenizer.ggml.eos_token_id'
 KEY_WORD_PREFIX = 'tokenizer.ggml.word_prefix'
 KEY_SUBWORD_PREFIX = 'tokenizer.ggml.subword_prefix'
 
-# script usage
-if __name__ == '__main__':
-    # primay usage
-    if len(sys.argv) < 3:
-        print('Usage: convert-to-ggml.py repo_id output_path [float-type=f16,f32]\n')
-        sys.exit(1)
-
-    # output in the same directory as the model
-    repo_id = Path(sys.argv[1])
-    output_path = Path(sys.argv[2])
-    float_type = sys.argv[3].lower() if len(sys.argv) > 3 else 'f16'
-
+def convert_hf(repo_id, output_path, float_type='f16'):
     # convert to ggml quantization type
     if float_type not in ['f16', 'f32']:
         print(f'Float type must be f16 or f32, got: {float_type}')
@@ -127,3 +113,23 @@ if __name__ == '__main__':
     # print success
     print()
     print(f'GGML model written to {output_path}')
+
+# script usage
+if __name__ == '__main__':
+    # primay usage
+    if len(sys.argv) < 3:
+        print('Usage: convert-to-ggml.py repo_id output_path [float-type=f16,f32]\n')
+        sys.exit(1)
+
+    # output in the same directory as the model
+    repo_id = sys.argv[1]
+    output_path = sys.argv[2]
+
+    # get float type
+    if len(sys.argv) > 3:
+        kwargs = {'float_type': sys.argv[3].lower()}
+    else:
+        kwargs = {}
+
+    # convert to ggml
+    convert_hf(repo_id, output_path, **kwargs)

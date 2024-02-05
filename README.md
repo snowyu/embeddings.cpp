@@ -8,37 +8,30 @@ This repo is a fork of original [bert.cpp](https://github.com/skeskinen/bert.cpp
 
 Fetch this repository then download submodules and install packages with
 ```sh
-git submodule update --init --recursive
+git submodule update --init
 pip install -r requirements.txt
 ```
 
-To fetch models from `huggingface`  and convert them to `gguf` format run the following
+To fetch models from `huggingface` and convert them to `gguf` format run something like the following (after creating the `models` directory)
 ```sh
-cd models
-python convert.py BAAI/bge-base-en-v1.5 models/bge-base-en-v1.5-f16.gguf # f16 is default
-python convert.py BAAI/bge-base-en-v1.5 models/bge-base-en-v1.5-f32.gguf f32 # optional
+python bert_cpp/convert.py BAAI/bge-base-en-v1.5 models/bge-base-en-v1.5-f16.gguf
 ```
+This will convert to `float16` by default. To do `float32` add `f32` to the end of the command.
 
 ### Build
 
-To build the dynamic library for usage from Python
+To build the C++ library for CPU/CUDA/Metal, run the following
 ```sh
-cmake -B build .
-make -C build -j
-```
+# CPU
+cmake -B build . && make -C build -j
 
-If you're compiling for GPU, you should run
-```sh
-cmake -DGGML_CUBLAS=ON -B build .
-make -C build -j
-```
-On some distros, you also need to specify the host C++ compiler. To do this, I suggest setting the `CUDAHOSTCXX` environment variable to your C++ bindir.
+# CUDA
+cmake -DGGML_CUBLAS=ON -B build . && make -C build -j
 
-And for Apple Metal, you should run
-```sh
-cmake -DGGML_METAL=ON -B build .
-make -C build -j
+# Metal
+cmake -DGGML_METAL=ON -B build . && make -C build -j
 ```
+On some distros, when compiling with CUDA, you also need to specify the host C++ compiler. To do this, I suggest setting the `CUDAHOSTCXX` environment variable to your C++ bindir.
 
 ### Execute
 
@@ -56,16 +49,16 @@ To force CPU usage, add the flag `-c`.
 
 You can also run everything through Python, which is particularly useful for batch inference. For instance,
 ```python
-import bert
-mod = bert.BertModel('models/bge-base-en-v1.5-f16.gguf')
+from bert_cpp import BertModel
+mod = BertModel('models/bge-base-en-v1.5-f16.gguf')
 emb = mod.embed(batch)
 ```
 where `batch` is a list of strings and `emb` is a `numpy` array of embedding vectors.
 
 ### Quantize
 
-You can quantize models with the command
+You can quantize models with the command (using the `f32` model as a base seems to work better)
 ```sh
-build/bin/quantize models/bge-base-en-v1.5-f16.gguf models/bge-base-en-v1.5-q8_0.gguf q8_0
+build/bin/quantize models/bge-base-en-v1.5-f32.gguf models/bge-base-en-v1.5-q8_0.gguf q8_0
 ```
 or whatever your desired quantization level is. Currently supported values are: `q8_0`, `q5_0`, `q5_1`, `q4_0`, and `q4_1`. You can then pass these model files directly to `main` as above.

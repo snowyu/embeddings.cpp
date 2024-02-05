@@ -5,11 +5,11 @@ import numpy as np
 from tqdm import tqdm
 
 LIB_DIR = os.path.dirname(__file__)
-LIB_PATH = os.path.join(LIB_DIR, 'build/libbert.so')
+LIB_PATH = os.path.join(LIB_DIR, '../build/src/libbert.so')
 
 # Avoid "LookupError: unknown encoding: ascii" when open() called in a destructor
-outnull_file = open(os.devnull, "w")
-errnull_file = open(os.devnull, "w")
+outnull_file = open(os.devnull, 'w')
+errnull_file = open(os.devnull, 'w')
 
 class suppress_stdout_stderr():
     # NOTE: these must be "saved" here to avoid exceptions when using
