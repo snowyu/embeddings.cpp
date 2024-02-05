@@ -15,9 +15,9 @@ pip install -r requirements.txt
 To fetch models from `huggingface`  and convert them to `gguf` format run the following
 ```sh
 cd models
-python download-repo.py BAAI/bge-base-en-v1.5 # or any other model
-python convert-to-ggml.py bge-base-en-v1.5 f16
-python convert-to-ggml.py bge-base-en-v1.5 f32
+python download.py BAAI/bge-base-en-v1.5 # or any other model
+python convert.py bge-base-en-v1.5 f16
+python convert.py bge-base-en-v1.5 f32
 ```
 
 ### Build
@@ -49,7 +49,7 @@ All executables are placed in `build/bin`. To run inference on a given text, run
 build/bin/main -m models/bge-base-en-v1.5/ggml-model-f16.gguf -p "Hello world"
 
 # Metal
-make -C build -j && GGML_METAL_PATH_RESOURCES=build/bin/ build/bin/main -m models/bge-base-en-v1.5/ggml-model-f16.gguf -p "Hello world"
+GGML_METAL_PATH_RESOURCES=build/bin/ build/bin/main -m models/bge-base-en-v1.5/ggml-model-f16.gguf -p "Hello world"
 ```
 To force CPU usage, add the flag `-c`.
 
