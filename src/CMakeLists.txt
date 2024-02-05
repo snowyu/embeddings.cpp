@@ -20,3 +20,6 @@ target_link_libraries(main PRIVATE bert ggml)
 # quantization
 add_executable(quantize quantize.cpp)
 target_link_libraries(quantize PRIVATE bert ggml)
+
+# install
+install(TARGETS bert LIBRARY DESTINATION lib)

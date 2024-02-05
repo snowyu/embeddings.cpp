@@ -4,72 +4,24 @@ import ctypes
 import numpy as np
 from tqdm import tqdm
 
-LIB_DIR = os.path.dirname(__file__)
-LIB_PATH = os.path.join(LIB_DIR, '../build/src/libbert.so')
+from .utils import _load_shared_library, suppress_stdout_stderr
 
-# Avoid "LookupError: unknown encoding: ascii" when open() called in a destructor
-outnull_file = open(os.devnull, 'w')
-errnull_file = open(os.devnull, 'w')
+# Load the library
+_lib_base_name = "bert"
+_lib = _load_shared_library(_lib_base_name)
 
-class suppress_stdout_stderr():
-    # NOTE: these must be "saved" here to avoid exceptions when using
-    #       this context manager inside of a __del__ method
-    sys = sys
-    os = os
-
-    def __init__(self, disable=True):
-        self.disable = disable
-
-    # Oddly enough this works better than the contextlib version
-    def __enter__(self):
-        if self.disable:
-            return self
-
-        # Check if sys.stdout and sys.stderr have fileno method
-        if not hasattr(self.sys.stdout, 'fileno') or not hasattr(self.sys.stderr, 'fileno'):
-            return self  # Return the instance without making changes
-
-        self.old_stdout_fileno_undup = self.sys.stdout.fileno()
-        self.old_stderr_fileno_undup = self.sys.stderr.fileno()
-
-        self.old_stdout_fileno = self.os.dup(self.old_stdout_fileno_undup)
-        self.old_stderr_fileno = self.os.dup(self.old_stderr_fileno_undup)
-
-        self.old_stdout = self.sys.stdout
-        self.old_stderr = self.sys.stderr
-
-        self.os.dup2(outnull_file.fileno(), self.old_stdout_fileno_undup)
-        self.os.dup2(errnull_file.fileno(), self.old_stderr_fileno_undup)
-
-        self.sys.stdout = outnull_file
-        self.sys.stderr = errnull_file
-        return self
-
-    def __exit__(self, *_):
-        if self.disable:
-            return
-
-        # Check if sys.stdout and sys.stderr have fileno method
-        if hasattr(self.sys.stdout, 'fileno') and hasattr(self.sys.stderr, 'fileno'):
-            self.sys.stdout = self.old_stdout
-            self.sys.stderr = self.old_stderr
-
-            self.os.dup2(self.old_stdout_fileno, self.old_stdout_fileno_undup)
-            self.os.dup2(self.old_stderr_fileno, self.old_stderr_fileno_undup)
-
-            self.os.close(self.old_stdout_fileno)
-            self.os.close(self.old_stderr_fileno)
-
+# increment ctypes pointer
 def increment_pointer(p, d):
     t = type(p)._type_
     v = ctypes.cast(p, ctypes.c_void_p)
     v.value += d * ctypes.sizeof(t)
     return ctypes.cast(v, ctypes.POINTER(t))
 
+# main bert interface
 class BertModel:
     def __init__(self, fname, max_tokens=None, batch_size=32, use_cpu=False, verbose=False):
         # set up ctypes for library
-        self.lib = ctypes.cdll.LoadLibrary(LIB_PATH)
+        self.lib = _lib
 
         self.lib.bert_load_from_file.restype = ctypes.c_void_p
         self.lib.bert_load_from_file.argtypes = [
