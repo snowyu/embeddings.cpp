@@ -26,20 +26,7 @@ https://github.com/xyzhang626/embeddings.cpp
 
 #define BERT_MAX_NODES 4096
 
-// model keys
-
-#define KEY_FTYPE "general.file_type"
-#define KEY_NAME "general.name"
-#define KEY_DESCRIPTION "general.description"
-
-#define KEY_PAD_ID "tokenizer.ggml.padding_token_id"
-#define KEY_UNK_ID "tokenizer.ggml.unknown_token_id"
-#define KEY_BOS_ID "tokenizer.ggml.bos_token_id"
-#define KEY_EOS_ID "tokenizer.ggml.eos_token_id"
-#define KEY_SUBWORD_PREFIX "tokenizer.ggml.subword_prefix"
-#define KEY_TOKEN_LIST "tokenizer.ggml.tokens"
-
-const int verbosity = 0;
+const int verbosity = 1;
 
 //
 // utilities to get data from a gguf file
@@ -73,9 +60,11 @@ static float get_f32(const gguf_context * ctx, const std::string & key) {
     return gguf_get_val_f32(ctx, i);
 }
 
-static std::string get_str(const gguf_context * ctx, const std::string & key) {
-    const int i = get_key_idx(ctx, key.c_str());
-
+static std::string get_str(const gguf_context * ctx, const std::string & key, const std::string & def = "") {
+    const int i = gguf_find_key(ctx, key.c_str());
+    if (i == -1) {
+        return def;
+    }
     return gguf_get_val_str(ctx, i);
 }
 
@@ -325,16 +314,22 @@ bert_tokens bert_tokenize(struct bert_ctx * ctx, bert_string text, uint64_t n_ma
     return tokens;
 }
 
-bert_string bert_detokenize(struct bert_ctx * ctx, bert_tokens tokens, bool debug) {
+bert_string bert_detokenize(struct bert_ctx * ctx, bert_tokens tokens, bool debug = false) {
     const bert_token bos_id = ctx->vocab.bos_id;
     const bert_token eos_id = ctx->vocab.eos_id;
+
+    const std::string word_prefix = ctx->vocab.word_prefix;
     const std::string subword_prefix = ctx->vocab.subword_prefix;
-    const std::string prefix = subword_prefix + subword_prefix;
+    const uint32_t word_prefix_len = word_prefix.size();
+    const uint32_t subword_prefix_len = subword_prefix.size();
 
     bert_string str = "";
     for (const uint64_t &t : tokens) {
         std::string token = bert_vocab_id_to_token(ctx, t);
-        bool subword = token.find(prefix) == 0;
+        bool subword = (
+            (subword_prefix_len > 0 && token.find(subword_prefix) == 0) ||
+            (word_prefix_len > 0 && token.find(word_prefix) != 0)
+        );
         if (debug) {
             if ((str.size() > 0) && !subword) {
                 str += " ";
@@ -345,12 +340,12 @@ bert_string bert_detokenize(struct bert_ctx * ctx, bert_tokens tokens, bool debu
                 continue;
             }
             if (subword) {
-                str += token.substr(2);
+                str += token.substr(subword_prefix_len);
             } else {
                 if (str.size() > 0) {
                     str += " ";
                 }
-                str += token;
+                str += token.substr(word_prefix_len);
             }
         }
     }
@@ -462,8 +457,11 @@ struct bert_ctx * bert_load_from_file(const char *fname, bool use_cpu) {
         vocab.unk_id = get_i32(ctx_gguf, KEY_UNK_ID);
         vocab.bos_id = get_i32(ctx_gguf, KEY_BOS_ID);
         vocab.eos_id = get_i32(ctx_gguf, KEY_EOS_ID);
+
+        vocab.word_prefix = get_str(ctx_gguf, KEY_WORD_PREFIX);
         vocab.subword_prefix = get_str(ctx_gguf, KEY_SUBWORD_PREFIX);
-        uint32_t prefix_len = vocab.subword_prefix.size();
+        uint32_t word_prefix_len = vocab.word_prefix.size();
+        uint32_t subword_prefix_len = vocab.subword_prefix.size();
 
         const int token_idx = gguf_find_key(ctx_gguf, KEY_TOKEN_LIST);
         const int n_vocab = gguf_get_arr_n(ctx_gguf, token_idx);
@@ -472,13 +470,16 @@ struct bert_ctx * bert_load_from_file(const char *fname, bool use_cpu) {
             std::string word = gguf_get_arr_str(ctx_gguf, token_idx, i);
             vocab.tokens.push_back(word);
 
-            if (word.find(vocab.subword_prefix) == 0) {
-                vocab.subword_token_to_id[word.substr(prefix_len)] = i;
-                vocab._id_to_subword_token[i] = word;
-            }
+            bool subword = (
+                (subword_prefix_len > 0 && word.find(vocab.subword_prefix) == 0) ||
+                (word_prefix_len > 0 && word.find(vocab.word_prefix) != 0)
+            );
 
-            if (vocab.token_to_id.count(word) == 0) {
-                vocab.token_to_id[word] = i;
+            if (subword) {
+                vocab.subword_token_to_id[word.substr(subword_prefix_len)] = i;
+                vocab._id_to_subword_token[i] = word;
+            } else {
+                vocab.token_to_id[word.substr(word_prefix_len)] = i;
                 vocab._id_to_token[i] = word;
             }
         }
@@ -486,6 +487,8 @@ struct bert_ctx * bert_load_from_file(const char *fname, bool use_cpu) {
         if (verbosity >= 1) {
             fprintf(stderr, "%s: TOKENIZER\n", __func__);
             fprintf(stderr, "%s: vocab size: %d\n", __func__, n_vocab);
+            fprintf(stderr, "%s: word_prefix: %s\n", __func__, vocab.word_prefix.c_str());
+            fprintf(stderr, "%s: subword_prefix: %s\n", __func__, vocab.subword_prefix.c_str());
             fprintf(stderr, "%s: pad_id = %d\n", __func__, vocab.pad_id);
             fprintf(stderr, "%s: unk_id = %d\n", __func__, vocab.unk_id);
             fprintf(stderr, "%s: bos_id = %d\n", __func__, vocab.bos_id);
@@ -627,13 +630,6 @@ struct bert_ctx * bert_load_from_file(const char *fname, bool use_cpu) {
             bert_layer & layer = model.layers[i];
             std::string pre = "encoder.layer." + std::to_string(i) + ".";
 
-            // normalization
-            layer.ln_att_w = get_tensor(new_bert->ctx_data, pre + "attention.output.LayerNorm.weight");
-            layer.ln_att_b = get_tensor(new_bert->ctx_data, pre + "attention.output.LayerNorm.bias");
-
-            layer.ln_out_w = get_tensor(new_bert->ctx_data, pre + "output.LayerNorm.weight");
-            layer.ln_out_b = get_tensor(new_bert->ctx_data, pre + "output.LayerNorm.bias");
-
             // attention
             layer.q_w = get_tensor(new_bert->ctx_data, pre + "attention.self.query.weight");
             layer.q_b = get_tensor(new_bert->ctx_data, pre + "attention.self.query.bias");
@@ -645,12 +641,18 @@ struct bert_ctx * bert_load_from_file(const char *fname, bool use_cpu) {
             layer.o_w = get_tensor(new_bert->ctx_data, pre + "attention.output.dense.weight");
             layer.o_b = get_tensor(new_bert->ctx_data, pre + "attention.output.dense.bias");
 
+            layer.ln_att_w = get_tensor(new_bert->ctx_data, pre + "attention.output.LayerNorm.weight");
+            layer.ln_att_b = get_tensor(new_bert->ctx_data, pre + "attention.output.LayerNorm.bias");
+
             // ff
             layer.ff_i_w = get_tensor(new_bert->ctx_data, pre + "intermediate.dense.weight");
             layer.ff_i_b = get_tensor(new_bert->ctx_data, pre + "intermediate.dense.bias");
 
             layer.ff_o_w = get_tensor(new_bert->ctx_data, pre + "output.dense.weight");
             layer.ff_o_b = get_tensor(new_bert->ctx_data, pre + "output.dense.bias");
+
+            layer.ln_out_w = get_tensor(new_bert->ctx_data, pre + "output.LayerNorm.weight");
+            layer.ln_out_b = get_tensor(new_bert->ctx_data, pre + "output.LayerNorm.bias");
         }
     }
 

@@ -54,9 +54,9 @@ bool bert_model_quantize(const std::string & fname_inp, const std::string & fnam
 
     // set general info
     gguf_set_val_str(gguf, "general.architecture", "bert");
-    gguf_set_val_str(gguf, "general.name", "BERT");
-    gguf_set_val_str(gguf, "general.description", "GGML BERT model");
-    gguf_set_val_u32(gguf, "general.file_type", qtype);
+    gguf_set_val_str(gguf, KEY_NAME, "BERT");
+    gguf_set_val_str(gguf, KEY_DESCRIPTION, "GGML BERT model");
+    gguf_set_val_u32(gguf, KEY_FTYPE, qtype);
 
     // set model params
     gguf_set_val_u32(gguf, "vocab_size", hparams.n_vocab);
@@ -67,12 +67,20 @@ bool bert_model_quantize(const std::string & fname_inp, const std::string & fnam
     gguf_set_val_u32(gguf, "num_hidden_layers", hparams.n_layer);
     gguf_set_val_f32(gguf, "layer_norm_eps", hparams.layer_norm_eps);
 
+    // set vocab params
+    gguf_set_val_i32(gguf, KEY_PAD_ID, vocab.pad_id);
+    gguf_set_val_i32(gguf, KEY_UNK_ID, vocab.unk_id);
+    gguf_set_val_i32(gguf, KEY_BOS_ID, vocab.bos_id);
+    gguf_set_val_i32(gguf, KEY_EOS_ID, vocab.eos_id);
+    gguf_set_val_str(gguf, KEY_WORD_PREFIX, vocab.word_prefix.c_str());
+    gguf_set_val_str(gguf, KEY_SUBWORD_PREFIX, vocab.subword_prefix.c_str());
+
     // write vocab
     std::vector<const char*> tokens;
     for (const std::string & s : vocab.tokens) {
         tokens.push_back(const_cast<const char*>(s.c_str()));
     }
-    gguf_set_arr_str(gguf, "tokenizer.ggml.tokens", tokens.data(), tokens.size());
+    gguf_set_arr_str(gguf, KEY_TOKEN_LIST, tokens.data(), tokens.size());
 
     // output buffer for quants
     int tot_size_old = 0;

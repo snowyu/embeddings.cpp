@@ -15,9 +15,8 @@ pip install -r requirements.txt
 To fetch models from `huggingface`  and convert them to `gguf` format run the following
 ```sh
 cd models
-python download.py BAAI/bge-base-en-v1.5 # or any other model
-python convert.py bge-base-en-v1.5 f16
-python convert.py bge-base-en-v1.5 f32
+python convert.py BAAI/bge-base-en-v1.5 models/bge-base-en-v1.5-f16.gguf # f16 is default
+python convert.py BAAI/bge-base-en-v1.5 models/bge-base-en-v1.5-f32.gguf f32 # optional
 ```
 
 ### Build
@@ -46,10 +45,10 @@ make -C build -j
 All executables are placed in `build/bin`. To run inference on a given text, run
 ```sh
 # CPU / CUDA
-build/bin/main -m models/bge-base-en-v1.5/ggml-model-f16.gguf -p "Hello world"
+build/bin/main -m models/bge-base-en-v1.5-f16.gguf -p "Hello world"
 
 # Metal
-GGML_METAL_PATH_RESOURCES=build/bin/ build/bin/main -m models/bge-base-en-v1.5/ggml-model-f16.gguf -p "Hello world"
+GGML_METAL_PATH_RESOURCES=build/bin/ build/bin/main -m models/bge-base-en-v1.5-f16.gguf -p "Hello world"
 ```
 To force CPU usage, add the flag `-c`.
 
@@ -58,7 +57,7 @@ To force CPU usage, add the flag `-c`.
 You can also run everything through Python, which is particularly useful for batch inference. For instance,
 ```python
 import bert
-mod = bert.BertModel('models/bge-base-en-v1.5/ggml-model-f16.gguf')
+mod = bert.BertModel('models/bge-base-en-v1.5-f16.gguf')
 emb = mod.embed(batch)
 ```
 where `batch` is a list of strings and `emb` is a `numpy` array of embedding vectors.
@@ -67,6 +66,6 @@ where `batch` is a list of strings and `emb` is a `numpy` array of embedding vec
 
 You can quantize models with the command
 ```sh
-build/bin/quantize models/bge-base-en-v1.5/ggml-model-f32.gguf models/bge-base-en-v1.5/ggml-model-q8_0.gguf q8_0
+build/bin/quantize models/bge-base-en-v1.5-f16.gguf models/bge-base-en-v1.5-q8_0.gguf q8_0
 ```
 or whatever your desired quantization level is. Currently supported values are: `q8_0`, `q5_0`, `q5_1`, `q4_0`, and `q4_1`. You can then pass these model files directly to `main` as above.

@@ -13,6 +13,22 @@
 #include <fstream>
 #include <map>
 
+// model keys
+
+#define KEY_FTYPE "general.file_type"
+#define KEY_NAME "general.name"
+#define KEY_DESCRIPTION "general.description"
+
+#define KEY_PAD_ID "tokenizer.ggml.padding_token_id"
+#define KEY_UNK_ID "tokenizer.ggml.unknown_token_id"
+#define KEY_BOS_ID "tokenizer.ggml.bos_token_id"
+#define KEY_EOS_ID "tokenizer.ggml.eos_token_id"
+#define KEY_WORD_PREFIX "tokenizer.ggml.word_prefix"
+#define KEY_SUBWORD_PREFIX "tokenizer.ggml.subword_prefix"
+#define KEY_TOKEN_LIST "tokenizer.ggml.tokens"
+
+// api
+
 #define BERT_API __attribute__ ((visibility ("default")))
 
 #ifdef __cplusplus
@@ -45,13 +61,6 @@ struct bert_hparams {
 };
 
 struct bert_layer {
-    // normalization
-    struct ggml_tensor *ln_att_w;
-    struct ggml_tensor *ln_att_b;
-
-    struct ggml_tensor *ln_out_w;
-    struct ggml_tensor *ln_out_b;
-
     // attention
     struct ggml_tensor *q_w;
     struct ggml_tensor *q_b;
@@ -63,12 +72,18 @@ struct bert_layer {
     struct ggml_tensor *o_w;
     struct ggml_tensor *o_b;
 
+    struct ggml_tensor *ln_att_w;
+    struct ggml_tensor *ln_att_b;
+
     // ff
     struct ggml_tensor *ff_i_w;
     struct ggml_tensor *ff_i_b;
 
     struct ggml_tensor *ff_o_w;
     struct ggml_tensor *ff_o_b;
+
+    struct ggml_tensor *ln_out_w;
+    struct ggml_tensor *ln_out_b;
 };
 
 struct bert_vocab {
@@ -76,6 +91,8 @@ struct bert_vocab {
     bert_token unk_id;
     bert_token bos_id;
     bert_token eos_id;
+
+    std::string word_prefix;
     std::string subword_prefix;
 
     std::vector<std::string> tokens;

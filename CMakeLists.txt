@@ -89,10 +89,9 @@ endif()
 
 add_subdirectory(ggml)
 add_subdirectory(examples)
-add_subdirectory(models)
 
+# bert library
 add_library(bert bert.cpp bert.h)
-
 target_include_directories(bert PUBLIC .)
 target_compile_features(bert PUBLIC cxx_std_20)
 target_link_libraries(bert PRIVATE ggml ${BERT_EXTRA_LIBS})
@@ -100,3 +99,7 @@ target_link_libraries(bert PRIVATE ggml ${BERT_EXTRA_LIBS})
 # for shared libraries
 set_target_properties(ggml PROPERTIES POSITION_INDEPENDENT_CODE ON)
 set_target_properties(bert PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+# quantization
+add_executable(quantize quantize.cpp)
+target_link_libraries(quantize PRIVATE bert ggml)
