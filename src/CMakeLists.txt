@@ -22,4 +22,4 @@ add_executable(quantize quantize.cpp)
 target_link_libraries(quantize PRIVATE bert ggml)
 
 # install
-install(TARGETS bert LIBRARY DESTINATION lib)
+install(TARGETS bert LIBRARY DESTINATION bert_cpp)
