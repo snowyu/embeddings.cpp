@@ -22,6 +22,7 @@ https://github.com/xyzhang626/embeddings.cpp
 #include <map>
 #include <string>
 #include <vector>
+#include <cstring>
 
 #define BERT_MAX_NODES 4096
 
@@ -30,6 +31,12 @@ https://github.com/xyzhang626/embeddings.cpp
 #define KEY_FTYPE "general.file_type"
 #define KEY_NAME "general.name"
 #define KEY_DESCRIPTION "general.description"
+
+#define KEY_PAD_ID "tokenizer.ggml.padding_token_id"
+#define KEY_UNK_ID "tokenizer.ggml.unknown_token_id"
+#define KEY_BOS_ID "tokenizer.ggml.bos_token_id"
+#define KEY_EOS_ID "tokenizer.ggml.eos_token_id"
+#define KEY_SUBWORD_PREFIX "tokenizer.ggml.subword_prefix"
 #define KEY_TOKEN_LIST "tokenizer.ggml.tokens"
 
 const int verbosity = 0;
@@ -46,6 +53,12 @@ static int get_key_idx(const gguf_context * ctx, const char * key) {
     }
 
     return i;
+}
+
+static int32_t get_i32(const gguf_context * ctx, const std::string & key) {
+    const int i = get_key_idx(ctx, key.c_str());
+
+    return gguf_get_val_i32(ctx, i);
 }
 
 static uint32_t get_u32(const gguf_context * ctx, const std::string & key) {
@@ -191,6 +204,7 @@ bool is_chinese_char(const std::string& str) {
 
 const char* bert_vocab_id_to_token(bert_ctx * ctx, bert_token id) {
     bert_vocab & vocab = ctx->vocab;
+
     auto it = vocab._id_to_token.find(id);
     if (it != vocab._id_to_token.end()) {
         return it->second.c_str();
@@ -199,14 +213,14 @@ const char* bert_vocab_id_to_token(bert_ctx * ctx, bert_token id) {
     if (it != vocab._id_to_subword_token.end()) {
         return it->second.c_str();
     }
-    return "[UNK TOKEN from bert_vocab]";
+    return "[UNK]";
 }
 
 bert_tokens bert_tokenize(struct bert_ctx * ctx, bert_string text, uint64_t n_max_tokens) {
-    int cls_tok_id = 101;
-    int sep_tok_id = 102;
-    int unk_tok_id = 100;
     const bert_vocab &vocab = ctx->vocab;
+    const bert_token bos_id = vocab.bos_id;
+    const bert_token eos_id = vocab.eos_id;
+    const bert_token unk_id = vocab.unk_id;
 
     std::string ori_str = text;
     ori_str = bert_normalize_prompt(ori_str);
@@ -257,10 +271,10 @@ bert_tokens bert_tokenize(struct bert_ctx * ctx, bert_string text, uint64_t n_ma
 
     // start with a cls token
     bert_tokens tokens;
-    tokens.push_back(cls_tok_id);
+    tokens.push_back(bos_id);
 
-    // find the longest tokens that form the words:
-    for (const auto &word : words) {
+    // find the longest tokens that form the words
+    for (const std::string &word : words) {
         // skip empty words
         int n = word.size();
         if (n == 0) continue;
@@ -276,6 +290,7 @@ bert_tokens bert_tokenize(struct bert_ctx * ctx, bert_string text, uint64_t n_ma
             break;
         }
 
+
         // move through character position in word
         while (i < n) {
             // loop through possible match length
@@ -288,7 +303,6 @@ bert_tokens bert_tokenize(struct bert_ctx * ctx, bert_string text, uint64_t n_ma
                     token_map = &vocab.subword_token_to_id;
                     goto loop;
                 }
-                j--;
             }
 
             // we didn't find a match at this length
@@ -300,24 +314,61 @@ bert_tokens bert_tokenize(struct bert_ctx * ctx, bert_string text, uint64_t n_ma
         // we didn't find any matches for this word
         if (!match) {
             // fprintf(stderr, "%s: unknown token '%s'\n", __func__, word.data());
-            tokens.push_back(unk_tok_id);
+            tokens.push_back(unk_id);
         }
     }
 
     // append terminate token
-    tokens.push_back(sep_tok_id);
+    tokens.push_back(eos_id);
 
     // return tokens
     return tokens;
+}
+
+bert_string bert_detokenize(struct bert_ctx * ctx, bert_tokens tokens, bool debug) {
+    const bert_token bos_id = ctx->vocab.bos_id;
+    const bert_token eos_id = ctx->vocab.eos_id;
+    const std::string subword_prefix = ctx->vocab.subword_prefix;
+    const std::string prefix = subword_prefix + subword_prefix;
+
+    bert_string str = "";
+    for (const uint64_t &t : tokens) {
+        std::string token = bert_vocab_id_to_token(ctx, t);
+        bool subword = token.find(prefix) == 0;
+        if (debug) {
+            if ((str.size() > 0) && !subword) {
+                str += " ";
+            }
+            str += token;
+        } else {
+            if (t == bos_id || t == eos_id) {
+                continue;
+            }
+            if (subword) {
+                str += token.substr(2);
+            } else {
+                if (str.size() > 0) {
+                    str += " ";
+                }
+                str += token;
+            }
+        }
+    }
+    return str;
+}
+
+uint64_t bert_detokenize_c(struct bert_ctx * ctx, int32_t * tokens, char * output, uint64_t n_tokens, uint64_t n_output, bool debug) {
+    bert_tokens tokens2(tokens, tokens + n_tokens);
+    bert_string str = bert_detokenize(ctx, tokens2, debug);
+    memcpy(output, str.c_str(), std::min(n_output, str.size()));
+    return str.size();
 }
 
 // c-string interface to tokenizer
 uint64_t bert_tokenize_c(struct bert_ctx * ctx, const char * text, int32_t * output, uint64_t n_max_tokens) {
     bert_string str(text);
     bert_tokens tokens = bert_tokenize(ctx, str, n_max_tokens);
-    for (uint64_t i = 0; i < tokens.size(); ++i) {
-        output[i] = tokens[i];
-    }
+    memcpy(output, tokens.data(), tokens.size() * sizeof(int32_t));
     return tokens.size();
 }
 
@@ -362,6 +413,9 @@ struct bert_ctx * bert_load_from_file(const char *fname, bool use_cpu) {
         const std::string ftype_str = get_ftype(ftype);
         const std::string description = get_str(ctx_gguf, KEY_DESCRIPTION);
         const std::string name = get_str(ctx_gguf, KEY_NAME);
+
+        fprintf(stderr, "\n");
+        fprintf(stderr, "%s: GGUF\n", __func__);
         fprintf(stderr, "%s: model name:   %s\n", __func__, name.c_str());
         fprintf(stderr, "%s: description:  %s\n", __func__, description.c_str());
         fprintf(stderr, "%s: GGUF version: %d\n", __func__, version);
@@ -390,6 +444,7 @@ struct bert_ctx * bert_load_from_file(const char *fname, bool use_cpu) {
         hparams.layer_norm_eps = get_f32(ctx_gguf, "layer_norm_eps");
 
         if (verbosity >= 1) {
+            fprintf(stderr, "%s: MODEL\n", __func__);
             fprintf(stderr, "%s: n_vocab        = %d\n", __func__, hparams.n_vocab);
             fprintf(stderr, "%s: n_max_tokens   = %d\n", __func__, hparams.n_max_tokens);
             fprintf(stderr, "%s: n_embd         = %d\n", __func__, hparams.n_embd);
@@ -403,6 +458,13 @@ struct bert_ctx * bert_load_from_file(const char *fname, bool use_cpu) {
 
     // load vocab
     {
+        vocab.pad_id = get_i32(ctx_gguf, KEY_PAD_ID);
+        vocab.unk_id = get_i32(ctx_gguf, KEY_UNK_ID);
+        vocab.bos_id = get_i32(ctx_gguf, KEY_BOS_ID);
+        vocab.eos_id = get_i32(ctx_gguf, KEY_EOS_ID);
+        vocab.subword_prefix = get_str(ctx_gguf, KEY_SUBWORD_PREFIX);
+        uint32_t prefix_len = vocab.subword_prefix.size();
+
         const int token_idx = gguf_find_key(ctx_gguf, KEY_TOKEN_LIST);
         const int n_vocab = gguf_get_arr_n(ctx_gguf, token_idx);
 
@@ -410,8 +472,8 @@ struct bert_ctx * bert_load_from_file(const char *fname, bool use_cpu) {
             std::string word = gguf_get_arr_str(ctx_gguf, token_idx, i);
             vocab.tokens.push_back(word);
 
-            if (word[0] == '#' && word[1] == '#') {
-                vocab.subword_token_to_id[word.substr(2)] = i;
+            if (word.find(vocab.subword_prefix) == 0) {
+                vocab.subword_token_to_id[word.substr(prefix_len)] = i;
                 vocab._id_to_subword_token[i] = word;
             }
 
@@ -419,6 +481,16 @@ struct bert_ctx * bert_load_from_file(const char *fname, bool use_cpu) {
                 vocab.token_to_id[word] = i;
                 vocab._id_to_token[i] = word;
             }
+        }
+
+        if (verbosity >= 1) {
+            fprintf(stderr, "%s: TOKENIZER\n", __func__);
+            fprintf(stderr, "%s: vocab size: %d\n", __func__, n_vocab);
+            fprintf(stderr, "%s: pad_id = %d\n", __func__, vocab.pad_id);
+            fprintf(stderr, "%s: unk_id = %d\n", __func__, vocab.unk_id);
+            fprintf(stderr, "%s: bos_id = %d\n", __func__, vocab.bos_id);
+            fprintf(stderr, "%s: eos_id = %d\n", __func__, vocab.eos_id);
+            fprintf(stderr, "\n");
         }
     }
 
@@ -661,6 +733,11 @@ void bert_free(bert_ctx * ctx) {
 //
 
 ggml_cgraph * bert_build_graph(bert_ctx * ctx, bert_batch batch) {
+    // vocab params
+    const bert_vocab & vocab = ctx->vocab;
+    const bert_token pad_id = vocab.pad_id;
+
+    // model params
     const bert_model & model = ctx->model;
     const bert_hparams & hparams = model.hparams;
 
@@ -730,7 +807,7 @@ ggml_cgraph * bert_build_graph(bert_ctx * ctx, bert_batch batch) {
                     sum_data[ba * cur_max_len + i] = 1 / (float)cur_len;
                 }
                 else {
-                    token_layer_data[ba * cur_max_len + i] = 101; // padding
+                    token_layer_data[ba * cur_max_len + i] = pad_id; // padding
                     pad_mask_data[ba * cur_max_len + i] = 0.0f;
                     sum_data[ba * cur_max_len + i] = 0.0f;
                 }

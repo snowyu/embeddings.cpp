@@ -67,7 +67,7 @@ def increment_pointer(p, d):
     return ctypes.cast(v, ctypes.POINTER(t))
 
 class BertModel:
-    def __init__(self, fname, batch_size=32, use_cpu=False, verbose=False):
+    def __init__(self, fname, max_tokens=None, batch_size=32, use_cpu=False, verbose=False):
         # set up ctypes for library
         self.lib = ctypes.cdll.LoadLibrary(LIB_PATH)
 
@@ -100,6 +100,16 @@ class BertModel:
             ctypes.c_uint64,                 # uint64_t n_max_tokens
         ]
 
+        self.lib.bert_detokenize_c.restype = ctypes.c_uint64
+        self.lib.bert_detokenize_c.argtypes = [
+            ctypes.c_void_p,                 # struct bert_ctx * ctx
+            ctypes.POINTER(ctypes.c_int32),  # int32_t * tokens
+            ctypes.c_char_p,                 # char * text
+            ctypes.c_uint64,                 # uint64_t n_input
+            ctypes.c_uint64,                 # uint64_t n_output
+            ctypes.c_bool,                   # bool debug
+        ]
+
         self.lib.bert_encode_batch_c.argtypes = [
             ctypes.c_void_p,                 # struct bert_ctx * ctx
             ctypes.POINTER(ctypes.c_char_p), # const char ** texts
@@ -116,7 +126,7 @@ class BertModel:
 
         # get model dimensions
         self.n_embd = self.lib.bert_n_embd(self.ctx)
-        self.n_max_tokens = self.lib.bert_n_max_tokens(self.ctx)
+        self.n_max_tokens = self.lib.bert_n_max_tokens(self.ctx) if max_tokens is None else max_tokens
         self.batch_size = batch_size
 
         # allocate compute buffers
@@ -133,6 +143,14 @@ class BertModel:
         tokens_p = tokens.ctypes.data_as(ctypes.POINTER(ctypes.c_int32))
         n_tokens = self.lib.bert_tokenize_c(self.ctx, text.encode('utf-8'), tokens_p, n_max_tokens)
         return tokens[:n_tokens]
+
+    def detokenize(self, tokens, debug=False):
+        n_input = len(tokens)
+        n_output = 16 * n_input
+        output = ctypes.create_string_buffer(n_output)
+        tokens_p = tokens.ctypes.data_as(ctypes.POINTER(ctypes.c_int32))
+        n_total = self.lib.bert_detokenize_c(self.ctx, tokens_p, output, n_input, n_output, debug)
+        return output.value.decode('utf-8')
 
     def embed_batch(self, batch, embed_p=None, n_threads=8):
         # create embedding memory

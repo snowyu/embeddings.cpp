@@ -8,8 +8,9 @@
 struct bert_params
 {
     int32_t n_threads = 6;
-    const char* model = "models/all-MiniLM-L6-v2/ggml-model-q4_0.bin";
-    const char* prompt = "test prompt";
+    const char* model = "models/bge-base-en-v1.5/ggml-model-f16.gguf";
+    const char* prompt = "hello world";
+    int32_t n_max_tokens = 0;
     int32_t batch_size = 32;
     bool use_cpu = false;
 };
@@ -25,6 +26,7 @@ void bert_print_usage(char **argv, const bert_params &params) {
     fprintf(stderr, "                        prompt to start generation with (default: random)\n");
     fprintf(stderr, "  -m FNAME, --model FNAME\n");
     fprintf(stderr, "                        model path (default: %s)\n", params.model);
+    fprintf(stderr, "  -n N, --max-tokens N  number of tokens to generate (default: max)\n");
     fprintf(stderr, "  -b BATCH_SIZE, --batch-size BATCH_SIZE\n");
     fprintf(stderr, "                        batch size to use when executing model\n");
     fprintf(stderr, "  -c, --cpu             use CPU backend (default: use CUDA if available)\n");
@@ -42,6 +44,8 @@ bool bert_params_parse(int argc, char **argv, bert_params &params) {
             params.prompt = argv[++i];
         } else if (arg == "-m" || arg == "--model") {
             params.model = argv[++i];
+        } else if (arg == "-n" || arg == "--max-tokens") {
+            params.n_max_tokens = std::stoi(argv[++i]);
         } else if (arg == "-c" || arg == "--cpu") {
             params.use_cpu = true;
         } else if (arg == "-h" || arg == "--help") {
@@ -61,6 +65,7 @@ int main(int argc, char ** argv) {
     ggml_time_init();
     const int64_t t_main_start_us = ggml_time_us();
 
+    // load cli arguments
     bert_params params;
     if (bert_params_parse(argc, argv, params) == false) {
         return 1;
@@ -80,8 +85,11 @@ int main(int argc, char ** argv) {
             return 1;
         }
 
-        const int32_t n_max_tokens = bert_n_max_tokens(bctx);
-        bert_allocate_buffers(bctx, n_max_tokens, params.batch_size);
+        // allocate buffers for length and batch size
+        if (params.n_max_tokens <= 0) {
+            params.n_max_tokens = bert_n_max_tokens(bctx);
+        }
+        bert_allocate_buffers(bctx, params.n_max_tokens, params.batch_size);
 
         t_load_us = ggml_time_us() - t_start_us;
     }

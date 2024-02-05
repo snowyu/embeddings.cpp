@@ -72,6 +72,12 @@ struct bert_layer {
 };
 
 struct bert_vocab {
+    bert_token pad_id;
+    bert_token unk_id;
+    bert_token bos_id;
+    bert_token eos_id;
+    std::string subword_prefix;
+
     std::vector<std::string> tokens;
 
     std::map<std::string, bert_token> token_to_id;
@@ -162,11 +168,26 @@ BERT_API bert_tokens bert_tokenize(
     uint64_t n_max_tokens
 );
 
+BERT_API bert_string bert_detokenize(
+    struct bert_ctx * ctx,
+    bert_tokens tokens,
+    bool debug
+);
+
 BERT_API uint64_t bert_tokenize_c(
     struct bert_ctx * ctx,
     const char * text,
     int32_t * output,
     uint64_t n_max_tokens
+);
+
+BERT_API uint64_t bert_detokenize_c(
+    struct bert_ctx * ctx,
+    int32_t * tokens,
+    char * output,
+    uint64_t n_tokens,
+    uint64_t n_output,
+    bool debug
 );
 
 BERT_API void bert_forward(
