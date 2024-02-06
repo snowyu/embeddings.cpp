@@ -87,9 +87,10 @@ endif()
 # build it
 #
 
-# add ggml and bert
-add_subdirectory(ggml)
-add_subdirectory(src)
-
-# for shared library
+# add ggml
+add_subdirectory(ggml EXCLUDE_FROM_ALL)
 set_target_properties(ggml PROPERTIES POSITION_INDEPENDENT_CODE ON)
+install(TARGETS ggml LIBRARY DESTINATION bert_cpp)
+
+# add bert
+add_subdirectory(src)

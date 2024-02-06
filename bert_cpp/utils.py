@@ -1,44 +1,46 @@
 # various utils (from llama-cpp-python mostly)
 
+import os
+import sys
+import ctypes
 from pathlib import Path
 
 # load the library
-def _load_shared_library(lib_base_name):
+def load_shared_library(lib_base_name):
     # construct the paths to the possible shared library names
-    _base_path = Path(os.path.abspath(os.path.dirname(__file__)))
+    base_path = Path(os.path.abspath(os.path.dirname(__file__)))
 
     # searching for the library in the current directory under the name 'libbert' (default name
     # for bert.cpp) and 'bert' (default name for this repo)
-    _lib_paths = []
+    lib_paths = []
 
     # Determine the file extension based on the platform
     if sys.platform.startswith('linux'):
-        _lib_paths += [
-            _base_path / f'lib{lib_base_name}.so',
+        lib_paths += [
+            base_path / f'lib{lib_base_name}.so',
         ]
     elif sys.platform == 'darwin':
-        _lib_paths += [
-            _base_path / f'lib{lib_base_name}.so',
-            _base_path / f'lib{lib_base_name}.dylib',
+        lib_paths += [
+            base_path / f'lib{lib_base_name}.so',
+            base_path / f'lib{lib_base_name}.dylib',
         ]
     elif sys.platform == 'win32':
-        _lib_paths += [
-            _base_path / f'{lib_base_name}.dll',
-            _base_path / f'lib{lib_base_name}.dll',
+        lib_paths += [
+            base_path / f'{lib_base_name}.dll',
+            base_path / f'lib{lib_base_name}.dll',
         ]
     else:
         raise RuntimeError('Unsupported platform')
 
     if 'BERT_CPP_LIB' in os.environ:
-        lib_base_name = os.environ['BERT_CPP_LIB']
-        _lib = Path(lib_base_name)
-        _base_path = _lib.parent.resolve()
-        _lib_paths = [_lib.resolve()]
+        lib_path = Path(os.environ['BERT_CPP_LIB'])
+        base_path = lib_path.parent.resolve()
+        lib_paths = [lib_path.resolve()]
 
     # add the library directory to the DLL search path on Windows (if needed)
     cdll_args = dict()
     if sys.platform == 'win32' and sys.version_info >= (3, 8):
-        os.add_dll_directory(str(_base_path))
+        os.add_dll_directory(str(base_path))
         if 'CUDA_PATH' in os.environ:
             os.add_dll_directory(os.path.join(os.environ['CUDA_PATH'], 'bin'))
             os.add_dll_directory(os.path.join(os.environ['CUDA_PATH'], 'lib'))
@@ -48,15 +50,15 @@ def _load_shared_library(lib_base_name):
         cdll_args['winmode'] = ctypes.RTLD_GLOBAL
 
     # try to load the shared library, handling potential errors
-    for _lib_path in _lib_paths:
-        if _lib_path.exists():
+    for lib_path in lib_paths:
+        if lib_path.exists():
             try:
-                return ctypes.CDLL(str(_lib_path), **cdll_args)
+                return ctypes.CDLL(str(lib_path), **cdll_args)
             except Exception as e:
-                raise RuntimeError(f'Failed to load shared library "{_lib_path}": {e}')
+                raise RuntimeError(f'Failed to load shared library "{lib_path}": {e}')
 
     raise FileNotFoundError(
-        f'Shared library with base name '{lib_base_name}' not found'
+        f'Shared library with base name "{lib_base_name}" not found'
     )
 
 # avoid 'LookupError: unknown encoding: ascii' when open() called in a destructor

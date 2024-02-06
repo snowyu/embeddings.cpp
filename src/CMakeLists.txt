@@ -5,12 +5,12 @@
 # ggml includes
 include_directories(${CMAKE_SOURCE_DIR}/ggml/src ${CMAKE_SOURCE_DIR}/ggml/include/ggml)
 
-# bert library
+# bert (shared) library
 add_library(bert bert.cpp bert.h)
 target_compile_features(bert PUBLIC cxx_std_20)
-
-# for shared libraries
-set_target_properties(bert PROPERTIES POSITION_INDEPENDENT_CODE ON)
+set_target_properties(bert PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+    INSTALL_RPATH "$ORIGIN")
 target_link_libraries(bert PRIVATE ggml)
 
 # main entry
